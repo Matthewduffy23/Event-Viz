@@ -219,6 +219,7 @@ Node positions: read exactly from the image — do not adjust or remap.
 Node size typically represents number of touches/involvement.
 Line thickness between nodes represents pass frequency (thicker = more passes).
 Numbers inside circles are shirt numbers.
+Player names appear as text next to or below each node — extract them carefully.
 Nodes shown BELOW the pitch are substitutes — put them in subs_bench, NOT nodes.
 
 Return:
@@ -229,41 +230,42 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "..."}],
+    "nodes": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "<player_surname>"}],
     "edges": [{"from": <id>, "to": <id>, "count": <estimated_passes_1_to_20>}],
     "formation": "...",
     "subs_bench": [<shirt_number>, ...]
   }
 }
 
+IMPORTANT: Always populate the "name" field with the player surname shown near each node.
+If no name is visible next to a node, use an empty string "".
 Estimate edge counts: thin line=2, medium=6, thick=12, very thick=18.""",
 
     "avg_positions": """You are a football data extraction engine.
 Extract player positions from this football lineup/formation screenshot.
 Return ONLY valid JSON, no markdown, no explanation.
 
-CRITICAL: Output must be in LANDSCAPE orientation with the team attacking toward the RIGHT (x=100).
-The source image is likely PORTRAIT (vertical pitch). You must rotate/remap coordinates.
+The source image is a PORTRAIT (vertical) pitch diagram.
+You must convert to LANDSCAPE output where the team attacks toward the RIGHT (x=100).
 
-If GK is at the BOTTOM of the image:
-  - Image bottom → x=8 (GK end, left side of landscape)
-  - Image top → x=90 (attacking end, right side of landscape)
-  - Image left → y=15 (left side of landscape)
-  - Image right → y=85 (right side of landscape)
+STEP 1 — Identify which end has the GK (the goalkeeper, usually a different colour).
+STEP 2 — Map the portrait image to landscape coordinates:
 
-If GK is at the TOP of the image:
-  - Image top → x=8 (GK end)
-  - Image bottom → x=90 (attacking end)
-  - Image left → y=85
-  - Image right → y=15
+Case A — GK is near the BOTTOM of the image:
+  A player's distance from bottom of image → their x coordinate (bottom=x5, top=x92)
+  A player's distance from LEFT edge of image → their y coordinate (left=y85, right=y15)
+  So: bottom-left player → x=5, y=85. Top-centre player → x=90, y=50.
 
-Use these standard x positions:
-  GK: x=8, Defenders: x=22-30, Defensive Mids: x=40-45,
-  Central Mids: x=50-55, Attacking Mids: x=60-65,
-  Wingers: x=68-75, Strikers: x=80-88
+Case B — GK is near the TOP of the image:
+  A player's distance from top of image → their x coordinate (top=x5, bottom=x92)
+  A player's distance from LEFT edge of image → their y coordinate (left=y15, right=y85)
+  So: top-centre player (GK) → x=5, y=50. Bottom-centre player (striker) → x=90, y=50.
 
-Use these y positions:
-  Far left on pitch: y=12, Left-centre: y=33, Centre: y=50, Right-centre: y=67, Far right: y=88
+After mapping, verify:
+  - GK must have x between 3 and 15
+  - Outfield players must have x between 18 and 95
+  - All y values must be between 5 and 95
+  - Players spread across the full x range (not all bunched together)
 
 Return:
 {
@@ -503,29 +505,26 @@ def draw_avg_positions(data, title, subtitle, brand):
     ax  = _pitch_ax(fig)
     _draw_pitch(ax)
 
-    POS_COLORS = {
-        "GK": "#a78bfa",
-        "CB": "#f97316", "LCB": "#f97316", "RCB": "#f97316",
-        "LB": "#fb923c", "RB": "#fb923c", "LWB": "#fbbf24", "RWB": "#fbbf24",
-        "DM": "#34d399", "DMF": "#34d399", "CM": "#4ade80",
-        "AM": "#60a5fa", "LW": "#93c5fd", "RW": "#93c5fd",
-        "ST": T["accent"], "CF": T["accent"],
-    }
+    GK_COLOR = "#a78bfa"  # purple for GK only
 
     for p in players:
-        x, y = _cx(p.get("x", 50)), _cy(p.get("y", 34))
-        pos  = str(p.get("position", "CM")).upper()
-        col  = POS_COLORS.get(pos, T["accent"])
-        ax.scatter(x, y, s=1000, color=col, zorder=5,
-                   edgecolors=T["text"], linewidths=2.0)
+        raw_x = float(p.get("x", 50))
+        raw_y = float(p.get("y", 50))
+        x = float(np.clip(raw_x * 105 / 100, 3, 102))
+        y = float(np.clip(raw_y * 68  / 100, 3, 65))
+        pos = str(p.get("position", "CM")).upper()
+        col = GK_COLOR if pos == "GK" else T["accent"]
+        txt_col = "#000" if col in ("#a78bfa", "#fbbf24", "#22c55e", "#4ade80") else "#fff"
+        ax.scatter(x, y, s=1100, color=col, zorder=5,
+                   edgecolors=T["text"], linewidths=2.2)
         ax.text(x, y, str(p.get("id", "")), ha="center", va="center",
-                fontsize=11, fontweight="900", color="#000",
+                fontsize=12, fontweight="900", color=txt_col,
                 zorder=6, fontfamily="Montserrat")
         name = p.get("name", "")
         if name:
             short = name.split()[-1] if " " in name else name
-            ax.text(x, y-4.2, short, ha="center", va="top",
-                    fontsize=8.5, fontweight="600", color=T["text"], zorder=6,
+            ax.text(x, y-4.5, short, ha="center", va="top",
+                    fontsize=9, fontweight="600", color=T["text"], zorder=6,
                     fontfamily="Montserrat",
                     path_effects=[mpe.withStroke(linewidth=2.5, foreground=T["bg"])])
 

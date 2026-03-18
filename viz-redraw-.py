@@ -209,33 +209,22 @@ Return:
   }
 }""",
 
-    "pass_network": """You are a precise football data extraction engine.
-Extract pass network data from this screenshot. Return ONLY valid JSON.
+    "pass_network": """You are a football data extraction engine.
+Extract pass network data from this screenshot. Return ONLY valid JSON, no explanation, no markdown.
 
-STEP 1 — Find the pitch boundaries in the image.
-Identify the left edge, right edge, top edge and bottom edge of the actual pitch area (ignoring UI chrome, legends, player lists around it).
+Rules:
+- Nodes are circles containing shirt numbers, positioned on the pitch
+- Edges are lines directly connecting two nodes — only include a line if you can clearly SEE it drawn between two specific nodes
+- Do NOT invent edges. Do NOT include an edge unless there is a visible line between those two nodes
+- Do NOT omit edges that are clearly visible
+- Player names/surnames appear as small text near each node — read them carefully
+- Nodes shown outside/below the pitch are substitutes, put in subs_bench not nodes
+- x=0 is left edge of pitch, x=100 is right edge. y=0 is bottom, y=100 is top
+- Positions are relative to the pitch rectangle, not the full image
 
-STEP 2 — For each node (circle with a number):
-- Measure its position as a percentage of the pitch width (left=0%, right=100%) → this is x
-- Measure its position as a percentage of the pitch height (bottom=0%, top=100%) → this is y
-- Read the number inside the circle → this is id
-- Read the player name/surname written near the node → this is name
-- Only include nodes that are ON the pitch. Nodes shown below/outside the pitch are substitutes.
+Edge thickness → count: very thin=3, thin=5, medium=9, thick=14, very thick=20
 
-STEP 3 — For each line connecting two nodes:
-- Identify which two node ids it connects
-- Estimate passes from line thickness:
-    hairline/very thin = 2
-    thin = 4
-    medium = 8  
-    thick = 13
-    very thick = 18
-    extremely thick = 22
-- Every visible connection line must be included as an edge
-
-STEP 4 — Read the formation label if visible.
-
-Return this exact JSON structure:
+Return:
 {
   "viz_type": "pass_network",
   "team": "...",
@@ -243,54 +232,34 @@ Return this exact JSON structure:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname>"}],
-    "edges": [{"from": <id>, "to": <id>, "count": <2-22>}],
+    "nodes": [{"id": <shirt_no_int>, "x": <0-100>, "y": <0-100>, "name": "<surname or empty string>"}],
+    "edges": [{"from": <id>, "to": <id>, "count": <3-20>}],
     "formation": "...",
-    "subs_bench": [<id>, ...]
+    "subs_bench": [<shirt_no>, ...]
   }
-}
+}""",
 
-Critical rules:
-- x and y must be relative to the PITCH area only, not the full image
-- Every node on the pitch must have a name entry (use "" if no name visible)
-- Include ALL visible connecting lines as edges
-- Do NOT include subs in the nodes array""",
+    "avg_positions": """You are a football data extraction engine.
+Extract player positions from this lineup screenshot. Return ONLY valid JSON. No explanation. No markdown. No text before or after the JSON.
 
-    "avg_positions": """You are a precise football data extraction engine.
-Extract player positions from this lineup/formation screenshot. Return ONLY valid JSON.
+This image shows a VERTICAL (portrait) pitch. Output must be LANDSCAPE with GK on LEFT (low x) and attack on RIGHT (high x).
 
-This image shows a PORTRAIT (vertical) football pitch. You must output LANDSCAPE coordinates
-where the team attacks toward the RIGHT (x=100, GK on the left at x~8).
+IDENTIFY: Is the GK near the TOP or BOTTOM of the image?
 
-STEP 1 — Find the pitch rectangle in the image.
-Note the pitch's top-y, bottom-y, left-x, right-x pixel positions (as % of image dimensions).
+IF GK IS NEAR THE BOTTOM:
+  For each player, estimate how far UP the pitch they are (0%=bottom/GK end, 100%=top/attack end).
+  That percentage becomes their x value (GK=8, defenders=25, midfield=50, attackers=80).
+  Estimate how far across LEFT-TO-RIGHT they are (0%=left, 100%=right).
+  That percentage becomes their y value (left=15, centre=50, right=85).
 
-STEP 2 — Identify the GK (goalkeeper). Note whether GK is near the top or bottom of the pitch.
+IF GK IS NEAR THE TOP:
+  For each player, estimate how far DOWN the pitch they are (0%=top/GK end, 100%=bottom/attack end).
+  That percentage becomes their x value (GK=8, defenders=25, midfield=50, attackers=80).
+  Estimate how far across LEFT-TO-RIGHT they are (0%=left, 100%=right).
+  Right side of image → LOW y (y=15). Left side → HIGH y (y=85).
 
-STEP 3 — For each player circle/node, measure its position WITHIN the pitch rectangle:
-  portrait_x_pct = (player_pixel_x - pitch_left) / (pitch_right - pitch_left)   [0=left, 1=right]
-  portrait_y_pct = (player_pixel_y - pitch_top) / (pitch_bottom - pitch_top)     [0=top, 1=bottom]
+CRITICAL: Your first character of output must be { and last must be }. Nothing else.
 
-STEP 4 — Convert portrait percentages to landscape coordinates:
-
-If GK is near the BOTTOM of the pitch (portrait_y_pct close to 1.0):
-  landscape_x = (1.0 - portrait_y_pct) * 95 + 3          [GK end=low x, attack end=high x]
-  landscape_y = portrait_x_pct * 80 + 10                  [left=low y, right=high y]
-
-If GK is near the TOP of the pitch (portrait_y_pct close to 0.0):
-  landscape_x = portrait_y_pct * 95 + 3                   [GK end=low x, attack end=high x]
-  landscape_y = (1.0 - portrait_x_pct) * 80 + 10          [left=high y, right=low y]
-
-STEP 5 — Verify your output:
-  - GK: landscape_x should be 5-15
-  - Defenders: landscape_x should be 20-35
-  - Midfielders: landscape_x should be 38-65
-  - Attackers: landscape_x should be 68-92
-  - All landscape_y values should be 10-90
-  - Players at same depth in portrait → similar landscape_x values
-  - Players at same width in portrait → similar landscape_y values
-
-Return:
 {
   "viz_type": "avg_positions",
   "team": "...",
@@ -299,17 +268,23 @@ Return:
   "date": "...",
   "avg_positions": {
     "formation": "...",
-    "players": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
+    "players": [{"id": <shirt_no>, "x": <5-95>, "y": <10-90>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
   }
-}
-
-The relative spacing between players must be preserved accurately."""
+}"""
 }
 
 def _parse_response(raw):
     raw = raw.strip()
+    # Strip markdown fences
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
+    raw = raw.strip()
+    # Find first { and last } in case Claude added explanation text
+    start = raw.find("{")
+    end   = raw.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError(f"No JSON object found in response. Claude returned: {raw[:200]}")
+    raw = raw[start:end+1]
     return json.loads(raw)
 
 def call_claude(image_bytes, viz_hint, key):

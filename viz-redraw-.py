@@ -155,66 +155,151 @@ def _cx(v): return float(v) * 105 / 100
 def _cy(v): return float(v) * 68  / 100
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLAUDE VISION
+# CLAUDE VISION — separate prompt per viz type
 # ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS = {
+    "touch_map": """You are a football data extraction engine.
+Extract all touch/dot positions from this football pitch screenshot.
+Return ONLY valid JSON, no markdown, no explanation.
+
+The pitch is shown landscape (wider than tall). 
+Coordinate system: x=0 is LEFT edge, x=100 is RIGHT edge, y=0 is BOTTOM edge, y=100 is TOP edge.
+All dots must be INSIDE the pitch: x between 3 and 97, y between 3 and 97.
+
+Return:
+{
+  "viz_type": "touch_map",
+  "team": "...",
+  "opponent": "...",
+  "competition": "...",
+  "date": "...",
+  "touch_map": {
+    "successful": [{"x": <0-100>, "y": <0-100>}],
+    "unsuccessful": [{"x": <0-100>, "y": <0-100>}]
+  }
+}
+
+Map every visible dot. Successful touches are typically coloured (pink/red). Unsuccessful are grey/white.""",
+
+    "shot_map": """You are a football data extraction engine.
+Extract all shot positions from this xG/shot map screenshot.
+Return ONLY valid JSON, no markdown, no explanation.
+
+The team is ALWAYS shooting toward the RIGHT side (x=100).
+Coordinate system: x=0 LEFT, x=100 RIGHT, y=0 BOTTOM, y=100 TOP.
+ALL shots must have x > 52. If you see shots on the left side of the image, the pitch may be flipped — mirror them.
+Goal mouth is at x=100, y between 37 and 63.
+Penalty spot is approximately x=89, y=50.
+Circle/dot SIZE = xG value. Bigger = higher xG (typical range 0.02 to 0.45).
+FILLED solid circle = GOAL. EMPTY outline circle = not a goal (saved/blocked/off target).
+
+Return:
+{
+  "viz_type": "shot_map",
+  "team": "...",
+  "opponent": "...",
+  "competition": "...",
+  "date": "...",
+  "shot_map": {
+    "shots": [{"x": <52-100>, "y": <0-100>, "xg": <0.01-0.5>, "outcome": "goal|saved|blocked|off_target"}],
+    "total_xg": <float>,
+    "goals": <int>,
+    "total_shots": <int>
+  }
+}""",
+
+    "pass_network": """You are a football data extraction engine.
+Extract the pass network data from this football viz screenshot.
+Return ONLY valid JSON, no markdown, no explanation.
+
+The pitch is shown landscape (wider than tall).
+Coordinate system: x=0 LEFT, x=100 RIGHT, y=0 BOTTOM, y=100 TOP.
+Node positions: read exactly from the image — do not adjust or remap.
+Node size typically represents number of touches/involvement.
+Line thickness between nodes represents pass frequency (thicker = more passes).
+Numbers inside circles are shirt numbers.
+Nodes shown BELOW the pitch are substitutes — put them in subs_bench, NOT nodes.
+
+Return:
+{
+  "viz_type": "pass_network",
+  "team": "...",
+  "opponent": "...",
+  "competition": "...",
+  "date": "...",
+  "pass_network": {
+    "nodes": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "..."}],
+    "edges": [{"from": <id>, "to": <id>, "count": <estimated_passes_1_to_20>}],
+    "formation": "...",
+    "subs_bench": [<shirt_number>, ...]
+  }
+}
+
+Estimate edge counts: thin line=2, medium=6, thick=12, very thick=18.""",
+
+    "avg_positions": """You are a football data extraction engine.
+Extract player positions from this football lineup/formation screenshot.
+Return ONLY valid JSON, no markdown, no explanation.
+
+CRITICAL: Output must be in LANDSCAPE orientation with the team attacking toward the RIGHT (x=100).
+The source image is likely PORTRAIT (vertical pitch). You must rotate/remap coordinates.
+
+If GK is at the BOTTOM of the image:
+  - Image bottom → x=8 (GK end, left side of landscape)
+  - Image top → x=90 (attacking end, right side of landscape)
+  - Image left → y=15 (left side of landscape)
+  - Image right → y=85 (right side of landscape)
+
+If GK is at the TOP of the image:
+  - Image top → x=8 (GK end)
+  - Image bottom → x=90 (attacking end)
+  - Image left → y=85
+  - Image right → y=15
+
+Use these standard x positions:
+  GK: x=8, Defenders: x=22-30, Defensive Mids: x=40-45,
+  Central Mids: x=50-55, Attacking Mids: x=60-65,
+  Wingers: x=68-75, Strikers: x=80-88
+
+Use these y positions:
+  Far left on pitch: y=12, Left-centre: y=33, Centre: y=50, Right-centre: y=67, Far right: y=88
+
+Return:
+{
+  "viz_type": "avg_positions",
+  "team": "...",
+  "opponent": "...",
+  "competition": "...",
+  "date": "...",
+  "avg_positions": {
+    "formation": "...",
+    "players": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
+  }
+}"""
+}
+
+def _parse_response(raw):
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    return json.loads(raw)
+
 def call_claude(image_bytes, viz_hint, key):
     b64 = base64.standard_b64encode(image_bytes).decode()
-    lines = [
-        "You are a precise football data extraction engine.",
-        f"Viz type hint: {viz_hint}",
-        "Return ONLY valid JSON. No markdown fences. No explanation.",
-        "",
-        'Respond with exactly this structure (include only relevant sections):',
-        '{',
-        '  "viz_type": "touch_map or shot_map or pass_network or avg_positions",',
-        '  "team":"", "opponent":"", "competition":"", "date":"",',
-        '  "touch_map": {"successful":[{"x":0,"y":0}],"unsuccessful":[{"x":0,"y":0}]},',
-        '  "shot_map": {"shots":[{"x":75,"y":50,"xg":0.1,"outcome":"saved"}],"total_xg":0,"goals":0,"total_shots":0},',
-        '  "pass_network": {"nodes":[{"id":6,"x":50,"y":50,"name":""}],"edges":[{"from":6,"to":9,"count":5}],"formation":""},',
-        '  "avg_positions": {"formation":"","players":[{"id":22,"x":8,"y":50,"name":"","position":"GK"}]}',
-        '}',
-        "",
-        "COORDINATE SYSTEM: x=0 LEFT, x=100 RIGHT, y=0 BOTTOM, y=100 TOP.",
-        "",
-        "TOUCH MAP rules:",
-        "- Pitch is landscape (horizontal). Map dots directly.",
-        "- All dots MUST be inside pitch bounds: x between 2 and 98, y between 2 and 98.",
-        "- Do not place any dot outside these bounds.",
-        "",
-        "SHOT MAP rules:",
-        "- Team always shoots toward the RIGHT goal (x=100 side).",
-        "- ALL shots MUST have x > 52.",
-        "- Goal mouth centre is at x=105, y=50 in real coords — use x=98-100 for shots on target.",
-        "- Penalty spot at x=89, y=50.",
-        "- Circle SIZE in source image = xG (bigger = higher xG, estimate 0.01 to 0.5).",
-        "- FILLED/SOLID coloured circle = goal outcome.",
-        "- EMPTY/OUTLINE circle = saved, blocked, or off target.",
-        "",
-        "AVERAGE POSITIONS — MOST IMPORTANT RULES:",
-        "Output must be LANDSCAPE orientation with team attacking toward the RIGHT (high x).",
-        "Fixed x positions by role:",
-        "  GK: x=8",
-        "  CB/LCB/RCB: x=25",
-        "  LB/RB/LWB/RWB: x=30",
-        "  DM/DMF: x=42",
-        "  CM/CMF: x=52",
-        "  AM/AMF: x=62",
-        "  LW/RW/LWF/RWF: x=72",
-        "  ST/CF: x=82",
-        "Fixed y positions by lateral position:",
-        "  Far left player on each line: y=15",
-        "  Left-centre: y=35",
-        "  Centre: y=50",
-        "  Right-centre: y=65",
-        "  Far right player on each line: y=85",
-        "IMPORTANT: If source image shows pitch vertically (portrait) with GK at BOTTOM,",
-        "then: portrait-bottom=x=8, portrait-top=x=85, portrait-left=y=15, portrait-right=y=85.",
-        "If source image shows pitch vertically with GK at TOP,",
-        "then: portrait-top=x=8, portrait-bottom=x=85, portrait-left=y=85, portrait-right=y=15.",
-        "",
-        "PASS NETWORK: map node positions exactly as shown. Pitch is landscape.",
-    ]
-    prompt = "\n".join(lines)
+
+    # Pick the right prompt
+    hint_lower = viz_hint.lower()
+    if "touch" in hint_lower or "heat" in hint_lower:
+        prompt = PROMPTS["touch_map"]
+    elif "shot" in hint_lower or "xg" in hint_lower:
+        prompt = PROMPTS["shot_map"]
+    elif "pass" in hint_lower or "network" in hint_lower:
+        prompt = PROMPTS["pass_network"]
+    elif "position" in hint_lower or "lineup" in hint_lower or "formation" in hint_lower or "avg" in hint_lower:
+        prompt = PROMPTS["avg_positions"]
+    else:
+        prompt = PROMPTS["touch_map"]  # fallback
 
     r = requests.post("https://api.anthropic.com/v1/messages",
         headers={"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -227,11 +312,10 @@ def call_claude(image_bytes, viz_hint, key):
               ]}]}, timeout=90)
     r.raise_for_status()
     raw = r.json()["content"][0]["text"].strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-    return json.loads(raw)
+    return _parse_response(raw)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DRAW: TOUCH MAP──────────
 # DRAW: TOUCH MAP
 # ─────────────────────────────────────────────────────────────────────────────
 def draw_touch_map(data, title, subtitle, brand):
@@ -243,17 +327,14 @@ def draw_touch_map(data, title, subtitle, brand):
     ax  = _pitch_ax(fig)
     _draw_pitch(ax)
 
-    def _safe_pts(pts):
-        xs = [float(np.clip(p["x"] * 105 / 100, 1, 104)) for p in pts]
-        ys = [float(np.clip(p["y"] * 68  / 100, 1, 67))  for p in pts]
-        return xs, ys
-
     if succ:
-        xs, ys = _safe_pts(succ)
-        ax.scatter(xs, ys, s=140, color=T["dot_ok"], alpha=0.88, zorder=4, edgecolors="none")
+        ax.scatter([_cx(p["x"]) for p in succ],
+                   [_cy(p["y"]) for p in succ],
+                   s=130, color=T["dot_ok"], alpha=0.88, zorder=4, edgecolors="none")
     if unsucc:
-        xs, ys = _safe_pts(unsucc)
-        ax.scatter(xs, ys, s=110, color=T["dot_bad"], alpha=0.70, zorder=3, edgecolors="none")
+        ax.scatter([_cx(p["x"]) for p in unsucc],
+                   [_cy(p["y"]) for p in unsucc],
+                   s=100, color=T["dot_bad"], alpha=0.70, zorder=3, edgecolors="none")
 
     handles = []
     if succ:
@@ -290,40 +371,46 @@ def draw_shot_map(data, title, subtitle, brand,
 
     fig = _canvas()
 
-    # Half pitch — left 62% of canvas, proper bounds
-    ax = fig.add_axes([0.02, 0.12, 0.62, 0.74])
+    # Half pitch — left 58% of canvas
+    ax = fig.add_axes([0.03, 0.10, 0.58, 0.76])
     ax.set_facecolor(T["pitch"])
-    ax.set_xlim(48, 109); ax.set_ylim(-3, 71)
+    ax.set_xlim(50, 107); ax.set_ylim(-2, 70)
     ax.set_aspect("equal"); ax.axis("off")
     _draw_half_pitch(ax)
 
     for s in shots:
-        raw_x = float(s.get("x", 75))
-        raw_y = float(s.get("y", 50))
-        # Ensure shots are in attacking half — if Claude gives left-half coords, mirror them
-        if raw_x < 50:
-            raw_x = 100 - raw_x
-        x   = np.clip(raw_x * 105 / 100, 52.5, 106)
-        y   = np.clip(raw_y * 68  / 100, 1, 67)
+        x   = _cx(s.get("x", 75))
+        y   = _cy(s.get("y", 34))
         xg  = float(s.get("xg", 0.05))
         out = str(s.get("outcome", "saved")).lower()
-        sz  = max(50, min(1400, 50 + xg * 2200))
+        sz  = max(60, min(1200, 60 + xg * 2000))
 
         if out == "goal":
             ax.scatter(x, y, s=sz, color=T["dot_ok"], zorder=6,
-                       edgecolors=T["text"], linewidths=1.8)
+                       edgecolors=T["text"], linewidths=1.5)
         else:
             ax.scatter(x, y, s=sz, facecolors="none", zorder=5,
                        edgecolors=T["dot_bad"], linewidths=1.5)
 
-    # xG scale legend — bottom strip using figure text only
-    fig.text(0.04, 0.055, "Low xG ●  ●  ●  ●  ● High xG", fontsize=11,
-             color=T["subtext"], fontfamily="Montserrat", fontweight="600", va="bottom")
-    # Goal legend
-    fig.text(0.38, 0.055, "●  Goal", fontsize=13, color=T["dot_ok"],
-             fontfamily="Montserrat", fontweight="800", va="bottom")
-    fig.text(0.50, 0.055, "○  No Goal", fontsize=13, color=T["dot_bad"],
-             fontfamily="Montserrat", fontweight="800", va="bottom")
+    # xG scale legend
+    fig.text(0.04, 0.055, "Low xG", fontsize=11, color=T["subtext"],
+             fontfamily="Montserrat", fontweight="600", va="bottom")
+    for i, sz in enumerate([25, 70, 140, 280, 480]):
+        r = 0.006 * (sz**0.42) / 3.2
+        cx_ = 0.13 + i * 0.028
+        fig.add_artist(plt.Circle((cx_, 0.062), r, transform=fig.transFigure,
+                                  facecolor="none", edgecolor=T["dot_bad"], lw=1.2, zorder=5))
+    fig.text(0.30, 0.055, "High xG", fontsize=11, color=T["subtext"],
+             fontfamily="Montserrat", fontweight="600", va="bottom")
+
+    fig.add_artist(plt.Circle((0.38, 0.062), 0.012, transform=fig.transFigure,
+                               facecolor=T["dot_ok"], edgecolor=T["text"], lw=1.2, zorder=5))
+    fig.text(0.402, 0.055, "Goal", fontsize=11, color=T["text"],
+             fontfamily="Montserrat", fontweight="700", va="bottom")
+    fig.add_artist(plt.Circle((0.48, 0.062), 0.012, transform=fig.transFigure,
+                               facecolor="none", edgecolor=T["dot_bad"], lw=1.2, zorder=5))
+    fig.text(0.502, 0.055, "No Goal", fontsize=11, color=T["text"],
+             fontfamily="Montserrat", fontweight="700", va="bottom")
 
     # Stats panel — right side
     sx = 0.66
@@ -426,23 +513,19 @@ def draw_avg_positions(data, title, subtitle, brand):
     }
 
     for p in players:
-        raw_x = float(p.get("x", 50))
-        raw_y = float(p.get("y", 50))
-        # Clamp to valid pitch positions
-        x = float(np.clip(raw_x * 105 / 100, 3, 102))
-        y = float(np.clip(raw_y * 68  / 100, 3, 65))
+        x, y = _cx(p.get("x", 50)), _cy(p.get("y", 34))
         pos  = str(p.get("position", "CM")).upper()
         col  = POS_COLORS.get(pos, T["accent"])
-        ax.scatter(x, y, s=1100, color=col, zorder=5,
-                   edgecolors=T["text"], linewidths=2.2)
+        ax.scatter(x, y, s=1000, color=col, zorder=5,
+                   edgecolors=T["text"], linewidths=2.0)
         ax.text(x, y, str(p.get("id", "")), ha="center", va="center",
-                fontsize=12, fontweight="900", color="#000",
+                fontsize=11, fontweight="900", color="#000",
                 zorder=6, fontfamily="Montserrat")
         name = p.get("name", "")
         if name:
             short = name.split()[-1] if " " in name else name
-            ax.text(x, y-4.5, short, ha="center", va="top",
-                    fontsize=9, fontweight="600", color=T["text"], zorder=6,
+            ax.text(x, y-4.2, short, ha="center", va="top",
+                    fontsize=8.5, fontweight="600", color=T["text"], zorder=6,
                     fontfamily="Montserrat",
                     path_effects=[mpe.withStroke(linewidth=2.5, foreground=T["bg"])])
 

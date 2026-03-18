@@ -209,20 +209,33 @@ Return:
   }
 }""",
 
-    "pass_network": """You are a football data extraction engine.
-Extract the pass network data from this football viz screenshot.
-Return ONLY valid JSON, no markdown, no explanation.
+    "pass_network": """You are a precise football data extraction engine.
+Extract pass network data from this screenshot. Return ONLY valid JSON.
 
-The pitch is shown landscape (wider than tall).
-Coordinate system: x=0 LEFT, x=100 RIGHT, y=0 BOTTOM, y=100 TOP.
-Node positions: read exactly from the image — do not adjust or remap.
-Node size typically represents number of touches/involvement.
-Line thickness between nodes represents pass frequency (thicker = more passes).
-Numbers inside circles are shirt numbers.
-Player names appear as text next to or below each node — extract them carefully.
-Nodes shown BELOW the pitch are substitutes — put them in subs_bench, NOT nodes.
+STEP 1 — Find the pitch boundaries in the image.
+Identify the left edge, right edge, top edge and bottom edge of the actual pitch area (ignoring UI chrome, legends, player lists around it).
 
-Return:
+STEP 2 — For each node (circle with a number):
+- Measure its position as a percentage of the pitch width (left=0%, right=100%) → this is x
+- Measure its position as a percentage of the pitch height (bottom=0%, top=100%) → this is y
+- Read the number inside the circle → this is id
+- Read the player name/surname written near the node → this is name
+- Only include nodes that are ON the pitch. Nodes shown below/outside the pitch are substitutes.
+
+STEP 3 — For each line connecting two nodes:
+- Identify which two node ids it connects
+- Estimate passes from line thickness:
+    hairline/very thin = 2
+    thin = 4
+    medium = 8  
+    thick = 13
+    very thick = 18
+    extremely thick = 22
+- Every visible connection line must be included as an edge
+
+STEP 4 — Read the formation label if visible.
+
+Return this exact JSON structure:
 {
   "viz_type": "pass_network",
   "team": "...",
@@ -230,42 +243,52 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "<player_surname>"}],
-    "edges": [{"from": <id>, "to": <id>, "count": <estimated_passes_1_to_20>}],
+    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname>"}],
+    "edges": [{"from": <id>, "to": <id>, "count": <2-22>}],
     "formation": "...",
-    "subs_bench": [<shirt_number>, ...]
+    "subs_bench": [<id>, ...]
   }
 }
 
-IMPORTANT: Always populate the "name" field with the player surname shown near each node.
-If no name is visible next to a node, use an empty string "".
-Estimate edge counts: thin line=2, medium=6, thick=12, very thick=18.""",
+Critical rules:
+- x and y must be relative to the PITCH area only, not the full image
+- Every node on the pitch must have a name entry (use "" if no name visible)
+- Include ALL visible connecting lines as edges
+- Do NOT include subs in the nodes array""",
 
-    "avg_positions": """You are a football data extraction engine.
-Extract player positions from this football lineup/formation screenshot.
-Return ONLY valid JSON, no markdown, no explanation.
+    "avg_positions": """You are a precise football data extraction engine.
+Extract player positions from this lineup/formation screenshot. Return ONLY valid JSON.
 
-The source image is a PORTRAIT (vertical) pitch diagram.
-You must convert to LANDSCAPE output where the team attacks toward the RIGHT (x=100).
+This image shows a PORTRAIT (vertical) football pitch. You must output LANDSCAPE coordinates
+where the team attacks toward the RIGHT (x=100, GK on the left at x~8).
 
-STEP 1 — Identify which end has the GK (the goalkeeper, usually a different colour).
-STEP 2 — Map the portrait image to landscape coordinates:
+STEP 1 — Find the pitch rectangle in the image.
+Note the pitch's top-y, bottom-y, left-x, right-x pixel positions (as % of image dimensions).
 
-Case A — GK is near the BOTTOM of the image:
-  A player's distance from bottom of image → their x coordinate (bottom=x5, top=x92)
-  A player's distance from LEFT edge of image → their y coordinate (left=y85, right=y15)
-  So: bottom-left player → x=5, y=85. Top-centre player → x=90, y=50.
+STEP 2 — Identify the GK (goalkeeper). Note whether GK is near the top or bottom of the pitch.
 
-Case B — GK is near the TOP of the image:
-  A player's distance from top of image → their x coordinate (top=x5, bottom=x92)
-  A player's distance from LEFT edge of image → their y coordinate (left=y15, right=y85)
-  So: top-centre player (GK) → x=5, y=50. Bottom-centre player (striker) → x=90, y=50.
+STEP 3 — For each player circle/node, measure its position WITHIN the pitch rectangle:
+  portrait_x_pct = (player_pixel_x - pitch_left) / (pitch_right - pitch_left)   [0=left, 1=right]
+  portrait_y_pct = (player_pixel_y - pitch_top) / (pitch_bottom - pitch_top)     [0=top, 1=bottom]
 
-After mapping, verify:
-  - GK must have x between 3 and 15
-  - Outfield players must have x between 18 and 95
-  - All y values must be between 5 and 95
-  - Players spread across the full x range (not all bunched together)
+STEP 4 — Convert portrait percentages to landscape coordinates:
+
+If GK is near the BOTTOM of the pitch (portrait_y_pct close to 1.0):
+  landscape_x = (1.0 - portrait_y_pct) * 95 + 3          [GK end=low x, attack end=high x]
+  landscape_y = portrait_x_pct * 80 + 10                  [left=low y, right=high y]
+
+If GK is near the TOP of the pitch (portrait_y_pct close to 0.0):
+  landscape_x = portrait_y_pct * 95 + 3                   [GK end=low x, attack end=high x]
+  landscape_y = (1.0 - portrait_x_pct) * 80 + 10          [left=high y, right=low y]
+
+STEP 5 — Verify your output:
+  - GK: landscape_x should be 5-15
+  - Defenders: landscape_x should be 20-35
+  - Midfielders: landscape_x should be 38-65
+  - Attackers: landscape_x should be 68-92
+  - All landscape_y values should be 10-90
+  - Players at same depth in portrait → similar landscape_x values
+  - Players at same width in portrait → similar landscape_y values
 
 Return:
 {
@@ -278,7 +301,9 @@ Return:
     "formation": "...",
     "players": [{"id": <shirt_number>, "x": <0-100>, "y": <0-100>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
   }
-}"""
+}
+
+The relative spacing between players must be preserved accurately."""
 }
 
 def _parse_response(raw):

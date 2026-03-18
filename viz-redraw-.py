@@ -227,254 +227,311 @@ def call_claude_vision(image_bytes: bytes, viz_hint: str, key: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DRAWING FUNCTIONS
+# DRAWING FUNCTIONS  —  all output 1920×1080 px (Canva slide ready)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _add_labels(fig, ax, title, subtitle, brand):
-    """Add title, subtitle and brand watermark to any figure."""
+# Canvas constants
+W_IN, H_IN = 19.2, 10.8   # inches at 100 dpi = 1920×1080
+DPI = 100
+
+# Layout zones (as fractions of figure)
+TITLE_TOP    = 0.93   # title baseline
+SUBTITLE_TOP = 0.88   # subtitle baseline
+PITCH_TOP    = 0.85   # pitch axes top
+PITCH_BOT    = 0.10   # pitch axes bottom  (leaves room for legend)
+PITCH_LEFT   = 0.06
+PITCH_RIGHT  = 0.94
+BRAND_X      = 0.97
+BRAND_Y      = 0.02
+
+
+def _make_canvas():
+    """Create a 1920×1080 figure."""
+    fig = plt.figure(figsize=(W_IN, H_IN), dpi=DPI)
+    fig.patch.set_facecolor(BG)
+    return fig
+
+
+def _make_pitch_ax(fig):
+    """
+    Add a pitch axes that fills the middle of the canvas,
+    preserving a real 105×68 m aspect ratio inside a landscape frame.
+    Pitch coordinate space: x=0-105, y=0-68.
+    """
+    ax = fig.add_axes([PITCH_LEFT, PITCH_BOT,
+                       PITCH_RIGHT - PITCH_LEFT,
+                       PITCH_TOP   - PITCH_BOT])
+    ax.set_facecolor(BG)
+    ax.set_xlim(0, 105)
+    ax.set_ylim(0, 68)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    return ax
+
+
+def _draw_pitch_lines(ax, lw=1.8):
+    """Draw standard pitch markings in 105×68 coordinate space."""
+    c = LINE_C
+
+    def rect(x, y, w, h):
+        ax.add_patch(mpatches.Rectangle((x, y), w, h,
+                     fill=False, edgecolor=c, linewidth=lw, zorder=1))
+
+    rect(0, 0, 105, 68)                  # outline
+    ax.plot([52.5, 52.5], [0, 68], color=c, lw=lw, zorder=1)   # halfway
+    ax.add_patch(plt.Circle((52.5, 34), 9.15,
+                 fill=False, edgecolor=c, lw=lw, zorder=1))
+    ax.scatter([52.5], [34], s=12, color=c, zorder=1)
+    # Penalty areas
+    rect(0,  13.84, 16.5, 40.32)
+    rect(88.5, 13.84, 16.5, 40.32)
+    # 6-yard boxes
+    rect(0,  24.84, 5.5, 18.32)
+    rect(99.5, 24.84, 5.5, 18.32)
+    # Goals
+    rect(-2, 29.84, 2, 8.32)
+    rect(105, 29.84, 2, 8.32)
+    # Centre spot
+    ax.scatter([52.5], [34], s=15, color=c, zorder=1)
+    # Penalty spots
+    ax.scatter([11, 94], [34, 34], s=15, color=c, zorder=1)
+
+
+def _add_labels(fig, title, subtitle, brand):
+    """Add title, subtitle and brand to a 1920×1080 figure."""
     if title:
-        fig.text(0.5, 0.97, title.upper(),
-                 ha="center", va="top", fontsize=16, fontweight="900",
+        fig.text(0.5, TITLE_TOP, title.upper(),
+                 ha="center", va="bottom", fontsize=28, fontweight="900",
                  color=TEXT_C, fontfamily="Montserrat",
-                 path_effects=[pe.withStroke(linewidth=3, foreground=BG)])
+                 path_effects=[pe.withStroke(linewidth=4, foreground=BG)])
     if subtitle:
-        fig.text(0.5, 0.93, subtitle,
-                 ha="center", va="top", fontsize=10, fontweight="500",
+        fig.text(0.5, SUBTITLE_TOP - 0.01, subtitle,
+                 ha="center", va="bottom", fontsize=16, fontweight="500",
                  color="#6b7280", fontfamily="Montserrat")
     if brand:
-        fig.text(0.97, 0.02, brand,
-                 ha="right", va="bottom", fontsize=8, fontweight="700",
+        fig.text(BRAND_X, BRAND_Y, brand,
+                 ha="right", va="bottom", fontsize=13, fontweight="700",
                  color="#374151", fontfamily="Montserrat")
 
 
+def _add_legend(fig, handles, y=0.065):
+    """Add a centred legend below the pitch."""
+    leg = fig.legend(handles=handles,
+                     loc="lower center",
+                     bbox_to_anchor=(0.5, y),
+                     ncol=len(handles),
+                     frameon=False,
+                     fontsize=14,
+                     labelcolor=TEXT_C,
+                     handlelength=1.2,
+                     handleheight=1.0,
+                     borderpad=0,
+                     columnspacing=2.0)
+    plt.setp(leg.get_texts(), fontfamily="Montserrat", fontweight="700")
+
+
+# ── Pass Network ──────────────────────────────────────────────────────────────
+
 def draw_pass_network(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    pn = data.get("pass_network", {})
+    pn    = data.get("pass_network", {})
     nodes = pn.get("nodes", [])
     edges = pn.get("edges", [])
 
     if not nodes:
         raise ValueError("No pass network nodes found in extracted data.")
 
-    fig, ax = plt.subplots(figsize=(12, 8))
-    fig.patch.set_facecolor(BG)
-    ax.set_facecolor(BG)
-    ax.set_xlim(0, 100); ax.set_ylim(0, 100)
-    ax.set_aspect("equal"); ax.axis("off")
+    fig = _make_canvas()
+    ax  = _make_pitch_ax(fig)
+    _draw_pitch_lines(ax)
 
-    # Draw pitch lines
-    def _rect(x, y, w, h, lw=1.2):
-        ax.add_patch(mpatches.Rectangle((x, y), w, h,
-                     fill=False, edgecolor=LINE_C, linewidth=lw, zorder=1))
+    # Convert incoming 0-100 coords → 105×68
+    def cx(v): return float(v) * 105 / 100
+    def cy(v): return float(v) * 68  / 100
 
-    _rect(0, 0, 100, 100, 1.5)          # pitch outline
-    ax.plot([50, 50], [0, 100], color=LINE_C, lw=1.2, zorder=1)  # halfway
-    ax.add_patch(plt.Circle((50, 50), 9.15, fill=False, edgecolor=LINE_C, lw=1.2, zorder=1))
-    _rect(0, 21.1, 16.5, 57.8)          # left penalty
-    _rect(83.5, 21.1, 16.5, 57.8)       # right penalty
-    _rect(0, 36.8, 5.5, 26.3)           # left 6yd
-    _rect(94.5, 36.8, 5.5, 26.3)        # right 6yd
+    node_map  = {n["id"]: n for n in nodes}
+    max_count = max((e.get("count", 1) for e in edges), default=1)
 
-    # Build node lookup
-    node_map = {n["id"]: n for n in nodes}
-    edge_counts = {(e["from"], e["to"]): e.get("count", 1) for e in edges}
-    max_count = max(edge_counts.values(), default=1)
-
-    # Draw edges
+    # Edges
     for e in edges:
         f, t = e["from"], e["to"]
         if f not in node_map or t not in node_map: continue
         nf, nt = node_map[f], node_map[t]
-        cnt = e.get("count", 1)
-        alpha = 0.3 + 0.6 * (cnt / max_count)
-        lw    = 1.0 + 5.0 * (cnt / max_count)
-        ax.plot([nf["x"], nt["x"]], [nf["y"], nt["y"]],
+        cnt   = e.get("count", 1)
+        alpha = 0.25 + 0.70 * (cnt / max_count)
+        lw    = 1.5  + 8.0  * (cnt / max_count)
+        ax.plot([cx(nf["x"]), cx(nt["x"])],
+                [cy(nf["y"]), cy(nt["y"])],
                 color=ACCENT, alpha=alpha, linewidth=lw, zorder=2,
                 solid_capstyle="round")
 
-    # Draw nodes
-    node_sizes = []
-    for n in nodes:
-        total = sum(e.get("count", 1) for e in edges
-                    if e["from"] == n["id"] or e["to"] == n["id"])
-        node_sizes.append(total)
+    # Node sizes scaled by involvement
+    involvement = {n["id"]: sum(e.get("count", 1) for e in edges
+                                if e["from"] == n["id"] or e["to"] == n["id"])
+                   for n in nodes}
+    max_inv = max(involvement.values(), default=1)
 
-    max_sz = max(node_sizes, default=1) if node_sizes else 1
-    for i, n in enumerate(nodes):
-        sz = 300 + 700 * (node_sizes[i] / max_sz) if node_sizes else 500
-        ax.scatter(n["x"], n["y"], s=sz, color=ACCENT, zorder=5,
-                   edgecolors="#fff", linewidths=1.5)
-        ax.text(n["x"], n["y"], str(n["id"]),
-                ha="center", va="center", fontsize=9, fontweight="900",
-                color="#000" if ACCENT in ("#f59e0b",) else "#fff", zorder=6,
-                fontfamily="Montserrat")
+    for n in nodes:
+        inv = involvement.get(n["id"], 1)
+        sz  = 600 + 1400 * (inv / max_inv)
+        x, y = cx(n["x"]), cy(n["y"])
+        ax.scatter(x, y, s=sz, color=ACCENT, zorder=5,
+                   edgecolors="#ffffff", linewidths=2.5)
+        ax.text(x, y, str(n["id"]),
+                ha="center", va="center", fontsize=11, fontweight="900",
+                color="#000000" if ACCENT in ("#f59e0b", "#fbbf24") else "#ffffff",
+                zorder=6, fontfamily="Montserrat")
         name = n.get("name", "")
         if name:
-            ax.text(n["x"], n["y"] - 4.5, name,
-                    ha="center", va="top", fontsize=6.5, fontweight="600",
+            ax.text(x, y - 3.5, name,
+                    ha="center", va="top", fontsize=8, fontweight="600",
                     color=TEXT_C, zorder=6, fontfamily="Montserrat",
-                    path_effects=[pe.withStroke(linewidth=2, foreground=BG)])
+                    path_effects=[pe.withStroke(linewidth=2.5, foreground=BG)])
 
-    _add_labels(fig, ax, title, subtitle, brand)
-    fig.tight_layout(pad=0.5)
+    _add_labels(fig, title, subtitle, brand)
     return fig
 
 
+# ── Touch Map ─────────────────────────────────────────────────────────────────
+
 def draw_touch_map(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    tm = data.get("touch_map", {})
+    tm     = data.get("touch_map", {})
     succ   = tm.get("successful",   [])
     unsucc = tm.get("unsuccessful", [])
 
-    fig, ax = plt.subplots(figsize=(12, 8))
-    fig.patch.set_facecolor(BG)
-    ax.set_facecolor(BG)
-    ax.set_xlim(0, 100); ax.set_ylim(0, 100)
-    ax.set_aspect("equal"); ax.axis("off")
+    fig = _make_canvas()
+    ax  = _make_pitch_ax(fig)
+    _draw_pitch_lines(ax)
 
-    def _rect(x, y, w, h, lw=1.2):
-        ax.add_patch(mpatches.Rectangle((x, y), w, h,
-                     fill=False, edgecolor=LINE_C, linewidth=lw))
-
-    _rect(0, 0, 100, 100, 1.5)
-    ax.plot([50, 50], [0, 100], color=LINE_C, lw=1.2)
-    ax.add_patch(plt.Circle((50, 50), 9.15, fill=False, edgecolor=LINE_C, lw=1.2))
-    _rect(0, 21.1, 16.5, 57.8); _rect(83.5, 21.1, 16.5, 57.8)
-    _rect(0, 36.8, 5.5, 26.3);  _rect(94.5, 36.8, 5.5, 26.3)
+    def cx(v): return float(v) * 105 / 100
+    def cy(v): return float(v) * 68  / 100
 
     if succ:
-        xs = [p["x"] for p in succ]; ys = [p["y"] for p in succ]
-        ax.scatter(xs, ys, s=40, color=ACCENT, alpha=0.75, zorder=4,
+        ax.scatter([cx(p["x"]) for p in succ],
+                   [cy(p["y"]) for p in succ],
+                   s=120, color=ACCENT, alpha=0.85, zorder=4,
                    edgecolors="none")
     if unsucc:
-        xs = [p["x"] for p in unsucc]; ys = [p["y"] for p in unsucc]
-        ax.scatter(xs, ys, s=40, color="#6b7280", alpha=0.55, zorder=3,
+        ax.scatter([cx(p["x"]) for p in unsucc],
+                   [cy(p["y"]) for p in unsucc],
+                   s=100, color="#9ca3af", alpha=0.60, zorder=3,
                    edgecolors="none")
 
-    # Legend
     handles = []
     if succ:
         handles.append(mpatches.Patch(color=ACCENT,   label=f"{len(succ)} Successful Touches"))
     if unsucc:
-        handles.append(mpatches.Patch(color="#6b7280", label=f"{len(unsucc)} Unsuccessful Touches"))
+        handles.append(mpatches.Patch(color="#9ca3af", label=f"{len(unsucc)} Unsuccessful Touches"))
     if handles:
-        legend = ax.legend(handles=handles, loc="lower center",
-                           bbox_to_anchor=(0.5, -0.06), ncol=2,
-                           frameon=False, fontsize=9,
-                           labelcolor=TEXT_C)
-        plt.setp(legend.get_texts(), fontfamily="Montserrat", fontweight="600")
+        _add_legend(fig, handles)
 
-    _add_labels(fig, ax, title, subtitle, brand)
-    fig.tight_layout(pad=0.5)
+    _add_labels(fig, title, subtitle, brand)
     return fig
 
 
+# ── Shot Map ──────────────────────────────────────────────────────────────────
+
 def draw_shot_map(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    sm = data.get("shot_map", {})
+    sm    = data.get("shot_map", {})
     shots = sm.get("shots", [])
 
-    fig, ax = plt.subplots(figsize=(10, 8))
-    fig.patch.set_facecolor(BG)
+    fig = _make_canvas()
+    # Use only attacking half — x: 52.5 to 107
+    ax = fig.add_axes([0.15, PITCH_BOT, 0.70, PITCH_TOP - PITCH_BOT])
     ax.set_facecolor(BG)
-    # Show attacking half only (x: 50-100)
-    ax.set_xlim(50, 100); ax.set_ylim(0, 100)
-    ax.set_aspect("equal"); ax.axis("off")
+    ax.set_xlim(52.5, 107)
+    ax.set_ylim(0, 68)
+    ax.set_aspect("equal")
+    ax.axis("off")
 
-    # Pitch lines (right half only)
-    ax.add_patch(mpatches.Rectangle((50, 0), 50, 100,
-                 fill=False, edgecolor=LINE_C, linewidth=1.5))
-    ax.plot([50, 50], [0, 100], color=LINE_C, lw=1.5)
-    ax.add_patch(plt.Circle((50, 50), 9.15, fill=False, edgecolor=LINE_C, lw=1.2))
-    ax.add_patch(mpatches.Rectangle((83.5, 21.1), 16.5, 57.8,
-                 fill=False, edgecolor=LINE_C, lw=1.2))
-    ax.add_patch(mpatches.Rectangle((94.5, 36.8), 5.5, 26.3,
-                 fill=False, edgecolor=LINE_C, lw=1.2))
+    c = LINE_C
+    ax.add_patch(mpatches.Rectangle((52.5, 0), 52.5, 68,
+                 fill=False, edgecolor=c, lw=1.8, zorder=1))
+    ax.plot([52.5, 52.5], [0, 68], color=c, lw=1.8, zorder=1)
+    ax.add_patch(plt.Circle((52.5, 34), 9.15,
+                 fill=False, edgecolor=c, lw=1.5, zorder=1))
+    ax.add_patch(mpatches.Rectangle((88.5, 13.84), 16.5, 40.32,
+                 fill=False, edgecolor=c, lw=1.5, zorder=1))
+    ax.add_patch(mpatches.Rectangle((99.5, 24.84), 5.5, 18.32,
+                 fill=False, edgecolor=c, lw=1.5, zorder=1))
+    ax.add_patch(mpatches.Rectangle((105, 29.84), 2, 8.32,
+                 fill=False, edgecolor=c, lw=1.5, zorder=1))
 
     OUTCOME_STYLE = {
-        "goal":       {"color": ACCENT,    "marker": "*", "size": 300, "alpha": 1.0},
-        "saved":      {"color": "#3b82f6", "marker": "o", "size": 100, "alpha": 0.85},
-        "blocked":    {"color": "#6b7280", "marker": "s", "size": 80,  "alpha": 0.7},
-        "off_target": {"color": "#374151", "marker": "X", "size": 80,  "alpha": 0.6},
+        "goal":       {"color": ACCENT,    "marker": "*", "base": 600, "alpha": 1.0},
+        "saved":      {"color": "#3b82f6", "marker": "o", "base": 200, "alpha": 0.9},
+        "blocked":    {"color": "#9ca3af", "marker": "s", "base": 160, "alpha": 0.8},
+        "off_target": {"color": "#4b5563", "marker": "X", "base": 160, "alpha": 0.7},
     }
 
     for shot in shots:
         outcome = shot.get("outcome", "saved").lower()
         style   = OUTCOME_STYLE.get(outcome, OUTCOME_STYLE["saved"])
         xg      = shot.get("xg", 0.05)
-        size    = style["size"] * (0.5 + 2 * xg)
-        ax.scatter(shot["x"], shot["y"],
-                   s=size, color=style["color"], marker=style["marker"],
-                   alpha=style["alpha"], zorder=4,
-                   edgecolors="#fff" if outcome == "goal" else "none",
-                   linewidths=1.5)
+        size    = style["base"] * (0.5 + 2.5 * xg)
+        x = float(shot["x"]) * 105 / 100
+        y = float(shot["y"]) * 68  / 100
+        ax.scatter(x, y, s=size, color=style["color"],
+                   marker=style["marker"], alpha=style["alpha"], zorder=4,
+                   edgecolors="#ffffff" if outcome == "goal" else "none",
+                   linewidths=2.0)
 
-    # Legend
+    total_xg = sum(s.get("xg", 0) for s in shots)
+    goals     = sum(1 for s in shots if s.get("outcome") == "goal")
+
     handles = [
         mpatches.Patch(color=ACCENT,    label="Goal"),
         mpatches.Patch(color="#3b82f6", label="Saved"),
-        mpatches.Patch(color="#6b7280", label="Blocked"),
-        mpatches.Patch(color="#374151", label="Off Target"),
+        mpatches.Patch(color="#9ca3af", label="Blocked"),
+        mpatches.Patch(color="#4b5563", label="Off Target"),
     ]
-    legend = ax.legend(handles=handles, loc="lower left",
-                       bbox_to_anchor=(0.01, 0.01),
-                       frameon=False, fontsize=9, labelcolor=TEXT_C)
-    plt.setp(legend.get_texts(), fontfamily="Montserrat", fontweight="600")
+    _add_legend(fig, handles)
 
-    # xG total
-    total_xg = sum(s.get("xg", 0) for s in shots)
-    goals     = sum(1 for s in shots if s.get("outcome") == "goal")
-    ax.text(97, 96, f"{goals} Goals  ·  {total_xg:.2f} xG",
-            ha="right", va="top", fontsize=9, fontweight="700",
-            color=TEXT_C, fontfamily="Montserrat")
+    fig.text(0.5, 0.055,
+             f"{goals} Goals  ·  {total_xg:.2f} xG",
+             ha="center", va="bottom", fontsize=15, fontweight="700",
+             color=TEXT_C, fontfamily="Montserrat")
 
-    _add_labels(fig, ax, title, subtitle, brand)
-    fig.tight_layout(pad=0.5)
+    _add_labels(fig, title, subtitle, brand)
     return fig
 
 
+# ── Chance Creation ───────────────────────────────────────────────────────────
+
 def draw_chance_creation(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    cc = data.get("chance_creation", {})
+    cc      = data.get("chance_creation", {})
     chances = cc.get("chances", [])
 
-    fig, ax = plt.subplots(figsize=(12, 8))
-    fig.patch.set_facecolor(BG)
-    ax.set_facecolor(BG)
-    ax.set_xlim(0, 100); ax.set_ylim(0, 100)
-    ax.set_aspect("equal"); ax.axis("off")
+    fig = _make_canvas()
+    ax  = _make_pitch_ax(fig)
+    _draw_pitch_lines(ax)
 
-    def _rect(x, y, w, h, lw=1.2):
-        ax.add_patch(mpatches.Rectangle((x, y), w, h,
-                     fill=False, edgecolor=LINE_C, linewidth=lw))
+    def cx(v): return float(v) * 105 / 100
+    def cy(v): return float(v) * 68  / 100
 
-    _rect(0, 0, 100, 100, 1.5)
-    ax.plot([50, 50], [0, 100], color=LINE_C, lw=1.2)
-    ax.add_patch(plt.Circle((50, 50), 9.15, fill=False, edgecolor=LINE_C, lw=1.2))
-    _rect(0, 21.1, 16.5, 57.8); _rect(83.5, 21.1, 16.5, 57.8)
-    _rect(0, 36.8, 5.5, 26.3);  _rect(94.5, 36.8, 5.5, 26.3)
-
-    OUTCOME_C = {"goal": ACCENT, "shot": "#3b82f6", "blocked": "#6b7280"}
+    OUTCOME_C = {
+        "goal":    ACCENT,
+        "shot":    "#3b82f6",
+        "blocked": "#9ca3af",
+    }
 
     for c in chances:
         col = OUTCOME_C.get(c.get("outcome", "shot"), "#3b82f6")
         ax.annotate("",
-                    xy=(c["x_end"], c["y_end"]),
-                    xytext=(c["x_start"], c["y_start"]),
+                    xy=(cx(c["x_end"]), cy(c["y_end"])),
+                    xytext=(cx(c["x_start"]), cy(c["y_start"])),
                     arrowprops=dict(arrowstyle="-|>", color=col,
-                                   lw=1.8, mutation_scale=12),
+                                   lw=2.2, mutation_scale=18),
                     zorder=4)
-        ax.scatter(c["x_start"], c["y_start"], s=30, color=col,
-                   alpha=0.6, zorder=5, edgecolors="none")
+        ax.scatter(cx(c["x_start"]), cy(c["y_start"]),
+                   s=60, color=col, alpha=0.7, zorder=5, edgecolors="none")
 
     handles = [
         mpatches.Patch(color=ACCENT,    label="Led to Goal"),
         mpatches.Patch(color="#3b82f6", label="Led to Shot"),
-        mpatches.Patch(color="#6b7280", label="Blocked/Lost"),
+        mpatches.Patch(color="#9ca3af", label="Blocked / Lost"),
     ]
-    legend = ax.legend(handles=handles, loc="lower center",
-                       bbox_to_anchor=(0.5, -0.06), ncol=3,
-                       frameon=False, fontsize=9, labelcolor=TEXT_C)
-    plt.setp(legend.get_texts(), fontfamily="Montserrat", fontweight="600")
-
-    _add_labels(fig, ax, title, subtitle, brand)
-    fig.tight_layout(pad=0.5)
+    _add_legend(fig, handles)
+    _add_labels(fig, title, subtitle, brand)
     return fig
 
 
@@ -584,10 +641,10 @@ if run_btn and img_bytes_png:
                     st.error(f"Drawing error: {e}")
                     st.stop()
 
-            # Render figure
+            # Render figure — exact 1920×1080 (19.2in × 10.8in @ 100dpi)
             buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=220, bbox_inches="tight",
-                        facecolor=BG)
+            fig.savefig(buf, format="png", dpi=100,
+                        facecolor=BG, bbox_inches=None)
             plt.close(fig)
             img_out = buf.getvalue()
 

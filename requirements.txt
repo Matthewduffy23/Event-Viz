@@ -1,0 +1,6 @@
+streamlit
+matplotlib
+mplsoccer
+numpy
+pillow
+requests

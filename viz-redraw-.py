@@ -1,700 +1,686 @@
 """
-viz_redraw_app.py
-─────────────────────────────────────────────────────────────────────────────
-Upload a football viz screenshot (pass network, touch map, shot map, etc.)
-→ Claude vision extracts the data
-→ App redraws it in a clean dark professional style
+viz_redraw_app.py  —  Professional Football Viz Redraw
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Upload a screenshot → Claude extracts data → redrawn at 1920×1080
+Inspired by The Athletic's clean, professional style.
 
-pip install streamlit matplotlib mplsoccer numpy pillow requests anthropic
+pip install streamlit matplotlib mplsoccer numpy pillow requests scipy
 streamlit run viz_redraw_app.py
-─────────────────────────────────────────────────────────────────────────────
 """
 
-import io
-import json
-import base64
-import re
-import textwrap
-
+import io, json, base64, re, textwrap
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.patches import FancyArrowPatch
+import matplotlib.patheffects as mpe
 from matplotlib.colors import LinearSegmentedColormap
-import matplotlib.patheffects as pe
-
-try:
-    from mplsoccer import Pitch, VerticalPitch
-    HAS_MPLSOCCER = True
-except ImportError:
-    HAS_MPLSOCCER = False
-
-import requests
+from scipy.ndimage import gaussian_filter
 from PIL import Image
+import requests
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="VIZ REDRAW", layout="wide", page_icon="⚽")
-
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800;900&display=swap');
 html,body,[class*="css"]{font-family:'Montserrat',sans-serif!important;}
 .stApp{background:#07090f!important;}
-section[data-testid="stSidebar"]{background:#040608!important;border-right:1px solid #0f1520!important;}
+section[data-testid="stSidebar"]{background:#040608!important;border-right:1px solid #111827!important;}
 section[data-testid="stSidebar"] *{color:#fff!important;}
-.stButton>button{
-  background:linear-gradient(135deg,#ef4444,#dc2626)!important;
-  color:#fff!important;font-weight:800!important;border:none!important;
-  font-family:'Montserrat',sans-serif!important;border-radius:4px!important;
-  letter-spacing:.08em!important;text-transform:uppercase!important;
-  padding:10px 24px!important;
-}
-.stButton>button:hover{background:linear-gradient(135deg,#dc2626,#b91c1c)!important;}
-.stFileUploader{background:#0d1220!important;border:1px solid #1e2d4a!important;border-radius:8px!important;}
+.stButton>button{background:#ef4444!important;color:#fff!important;font-weight:800!important;
+  border:none!important;border-radius:4px!important;letter-spacing:.06em!important;
+  text-transform:uppercase!important;padding:10px 20px!important;}
+.stSelectbox>div>div,.stMultiSelect>div>div{background:#0d1424!important;border:1px solid #1e2d4a!important;}
 div[data-baseweb="select"]*{background:#0d1424!important;color:#fff!important;}
 div[data-baseweb="popover"]*{background:#0d1424!important;color:#fff!important;}
-.stSelectbox>div>div{background:#0d1424!important;border:1px solid #1e2d4a!important;}
-.stTextInput>div>div>input{background:#0d1424!important;border:1px solid #1e2d4a!important;color:#fff!important;}
+.stTextInput>div>div>input,.stTextArea textarea{background:#0d1424!important;
+  border:1px solid #1e2d4a!important;color:#fff!important;}
+.stNumberInput input{background:#0d1424!important;border:1px solid #1e2d4a!important;color:#fff!important;}
 label{color:#6b7280!important;font-size:9px!important;letter-spacing:.14em!important;text-transform:uppercase!important;}
-h1,h2,h3{color:#fff!important;}
-footer{display:none!important;}
-.upload-hint{color:#4b5563;font-size:12px;text-align:center;margin-top:8px;}
-</style>
-""", unsafe_allow_html=True)
+h1,h2,h3{color:#fff!important;} footer{display:none!important;}
+.stTabs [data-baseweb="tab"]{color:#6b7280!important;font-weight:700!important;}
+.stTabs [aria-selected="true"]{color:#ef4444!important;border-bottom-color:#ef4444!important;}
+</style>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HEADER
+# THEMES
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div style="padding:32px 0 24px;border-bottom:1px solid #1a2540;margin-bottom:32px;">
-  <div style="font-size:11px;font-weight:900;letter-spacing:.3em;color:#ef4444;text-transform:uppercase;margin-bottom:8px;">
-    FOOTBALL ANALYTICS
-  </div>
-  <h1 style="font-size:42px;font-weight:900;color:#fff;margin:0;letter-spacing:-.01em;line-height:1;">
-    VIZ REDRAW
-  </h1>
-  <div style="color:#4b5563;font-size:13px;font-weight:500;margin-top:8px;letter-spacing:.04em;">
-    Upload any football viz screenshot → AI extracts the data → redraws it professionally
-  </div>
-</div>
-""", unsafe_allow_html=True)
+THEMES = {
+    "Dark Navy": {
+        "bg": "#0a0f1c", "pitch": "#0a0f1c", "line": "#1e3a5f",
+        "text": "#e2e8f0", "subtext": "#64748b",
+        "accent": "#ef4444", "dot_ok": "#ef4444", "dot_bad": "#4b5563",
+    },
+    "Light (Athletic)": {
+        "bg": "#f8f5f0", "pitch": "#f8f5f0", "line": "#9ca3af",
+        "text": "#111827", "subtext": "#6b7280",
+        "accent": "#ef4444", "dot_ok": "#ef4444", "dot_bad": "#d1d5db",
+    },
+    "Pure Black": {
+        "bg": "#000000", "pitch": "#000000", "line": "#1f2937",
+        "text": "#ffffff", "subtext": "#6b7280",
+        "accent": "#ef4444", "dot_ok": "#ef4444", "dot_bad": "#374151",
+    },
+    "Dark Green": {
+        "bg": "#0a1a0a", "pitch": "#0d1f0d", "line": "#1a4a1a",
+        "text": "#f0fdf4", "subtext": "#6b7280",
+        "accent": "#22c55e", "dot_ok": "#22c55e", "dot_bad": "#374151",
+    },
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR SETTINGS
+# SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚙️ SETTINGS")
+    st.markdown("## VIZ REDRAW")
     st.markdown("---")
-
-    api_key = st.text_input("Anthropic API Key", type="password",
-                             help="Required to call Claude vision for data extraction",
-                             key="api_key")
-
+    api_key = st.text_input("Anthropic API Key", type="password", key="api_key")
     st.markdown("---")
-    st.markdown("**VIZ TYPE**")
-    viz_type = st.selectbox("Detect automatically or force type",
-                             ["Auto-detect", "Pass Network", "Touch Map",
-                              "Shot Map", "Heat Map", "Chance Creation Map"],
-                             key="viz_type")
-
+    theme_name = st.selectbox("Theme", list(THEMES.keys()), key="theme")
+    T = THEMES[theme_name]
     st.markdown("---")
     st.markdown("**LABELS**")
-    title_text  = st.text_input("Title", placeholder="e.g. Coventry City — Pass Network", key="title")
-    subtitle_text = st.text_input("Subtitle", placeholder="e.g. vs Preston North End · 18 Mar 2026", key="subtitle")
-    brand_text  = st.text_input("Brand / Credit", value="@YourHandle", key="brand")
-
-    st.markdown("---")
-    st.markdown("**STYLE**")
-    pitch_color  = st.selectbox("Pitch colour", ["Dark Navy (#0a0f1c)", "Pure Black", "Dark Green", "Charcoal"], key="pitch_col")
-    accent_color = st.selectbox("Accent colour", ["Red (#ef4444)", "Blue (#3b82f6)", "Gold (#f59e0b)", "Teal (#14b8a6)"], key="accent_col")
-
-PITCH_COLORS = {
-    "Dark Navy (#0a0f1c)": "#0a0f1c",
-    "Pure Black":           "#000000",
-    "Dark Green":           "#0d1f0d",
-    "Charcoal":             "#1a1a2e",
-}
-ACCENT_COLORS = {
-    "Red (#ef4444)":   "#ef4444",
-    "Blue (#3b82f6)":  "#3b82f6",
-    "Gold (#f59e0b)":  "#f59e0b",
-    "Teal (#14b8a6)":  "#14b8a6",
-}
-BG    = PITCH_COLORS.get(pitch_color,  "#0a0f1c")
-ACCENT = ACCENT_COLORS.get(accent_color, "#ef4444")
-LINE_C = "#2a3a5a"
-TEXT_C = "#e2e8f0"
+    title_in    = st.text_input("Title",    placeholder="e.g. Matt Grimes", key="title")
+    subtitle_in = st.text_input("Subtitle", placeholder="e.g. 2025-26 Season", key="subtitle")
+    brand_in    = st.text_input("Brand",    value="@MDUFFY", key="brand")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLAUDE VISION CALL
+# CANVAS — exact 1920x1080
 # ─────────────────────────────────────────────────────────────────────────────
-def call_claude_vision(image_bytes: bytes, viz_hint: str, key: str) -> dict:
-    """Send image to Claude, get back structured JSON of viz data."""
+W, H, DPI = 19.2, 10.8, 100
 
-    b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+def _canvas():
+    fig = plt.figure(figsize=(W, H), dpi=DPI)
+    fig.patch.set_facecolor(T["bg"])
+    return fig
 
-    system_prompt = textwrap.dedent("""
-    You are a football analytics data extraction engine.
-    Given a screenshot of a football visualisation, extract ALL visible data and return ONLY valid JSON.
-    Do not include any explanation, markdown, or code fences — pure JSON only.
-    """)
+def _labels(fig, title, subtitle, brand, ty=0.94, sy=0.89):
+    if title:
+        fig.text(0.5, ty, title.upper(), fontsize=30, fontweight="900",
+                 color=T["text"], ha="center", va="bottom",
+                 fontfamily="Montserrat",
+                 path_effects=[mpe.withStroke(linewidth=3, foreground=T["bg"])])
+    if subtitle:
+        fig.text(0.5, sy, subtitle, fontsize=15, fontweight="500",
+                 color=T["subtext"], ha="center", va="bottom", fontfamily="Montserrat")
+    if brand:
+        fig.text(0.97, 0.02, brand, fontsize=12, fontweight="700",
+                 color=T["subtext"], ha="right", va="bottom", fontfamily="Montserrat")
 
-    user_prompt = textwrap.dedent(f"""
-    Analyse this football visualisation screenshot carefully.
+def _pitch_ax(fig, left=0.06, bot=0.10, w=0.88, h=0.76):
+    ax = fig.add_axes([left, bot, w, h])
+    ax.set_facecolor(T["pitch"])
+    ax.set_xlim(-2, 107); ax.set_ylim(-2, 70)
+    ax.set_aspect("equal"); ax.axis("off")
+    return ax
 
+def _draw_pitch(ax, lw=1.6):
+    c = T["line"]
+    def R(x, y, w, h):
+        ax.add_patch(mpatches.Rectangle((x,y),w,h,fill=False,edgecolor=c,lw=lw,zorder=1))
+    R(0,0,105,68)
+    ax.plot([52.5,52.5],[0,68],color=c,lw=lw,zorder=1)
+    ax.add_patch(plt.Circle((52.5,34),9.15,fill=False,edgecolor=c,lw=lw,zorder=1))
+    ax.scatter([52.5],[34],s=14,color=c,zorder=1)
+    R(0,13.84,16.5,40.32); R(88.5,13.84,16.5,40.32)
+    R(0,24.84,5.5,18.32);  R(99.5,24.84,5.5,18.32)
+    ax.add_patch(mpatches.Rectangle((-2,29.84),2,8.32,fill=False,edgecolor=c,lw=lw,zorder=1))
+    ax.add_patch(mpatches.Rectangle((105,29.84),2,8.32,fill=False,edgecolor=c,lw=lw,zorder=1))
+    ax.scatter([11,94],[34,34],s=14,color=c,zorder=1)
+
+def _draw_half_pitch(ax, lw=1.6):
+    c = T["line"]
+    def R(x,y,w,h):
+        ax.add_patch(mpatches.Rectangle((x,y),w,h,fill=False,edgecolor=c,lw=lw,zorder=1))
+    ax.plot([52.5,105],[0,0],color=c,lw=lw,zorder=1)
+    ax.plot([52.5,105],[68,68],color=c,lw=lw,zorder=1)
+    ax.plot([105,105],[0,68],color=c,lw=lw,zorder=1)
+    ax.plot([52.5,52.5],[0,68],color=c,lw=lw,zorder=1)
+    ax.add_patch(plt.Circle((52.5,34),9.15,fill=False,edgecolor=c,lw=lw,zorder=1,clip_on=True))
+    R(88.5,13.84,16.5,40.32)
+    R(99.5,24.84,5.5,18.32)
+    ax.add_patch(mpatches.Rectangle((105,29.84),2,8.32,fill=False,edgecolor=c,lw=lw,zorder=1))
+    ax.scatter([94],[34],s=14,color=c,zorder=1)
+
+def _to_png(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=DPI, facecolor=T["bg"], bbox_inches=None)
+    plt.close(fig)
+    return buf.getvalue()
+
+def _cx(v): return float(v) * 105 / 100
+def _cy(v): return float(v) * 68  / 100
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLAUDE VISION
+# ─────────────────────────────────────────────────────────────────────────────
+def call_claude(image_bytes, viz_hint, key):
+    b64 = base64.standard_b64encode(image_bytes).decode()
+    prompt = textwrap.dedent(f"""
+    You are a football data extraction engine. Analyse this screenshot carefully.
     Viz type hint: {viz_hint}
+    Return ONLY valid JSON — no markdown, no explanation.
 
-    Extract all data and return a JSON object with this structure (use whichever sections apply):
-
+    Use this structure (include only relevant sections):
     {{
-      "viz_type": "pass_network" | "touch_map" | "shot_map" | "heat_map" | "chance_creation",
-      "team_name": "...",
-      "opponent": "...",
-      "competition": "...",
-      "date": "...",
-
-      "pass_network": {{
-        "nodes": [
-          {{"id": <shirt_number_int>, "x": <0-100_float>, "y": <0-100_float>, "name": "..."}}
-        ],
-        "edges": [
-          {{"from": <id>, "to": <id>, "count": <int>}}
-        ],
-        "subs_bench": [<shirt_number_int>, ...]
-      }},
+      "viz_type": "touch_map"|"shot_map"|"pass_network"|"avg_positions",
+      "team":"...", "opponent":"...", "competition":"...", "date":"...",
 
       "touch_map": {{
-        "successful": [{{"x": <0-100>, "y": <0-100>}}],
-        "unsuccessful": [{{"x": <0-100>, "y": <0-100>}}]
+        "successful":   [{{"x":<0-100>,"y":<0-100>}}],
+        "unsuccessful": [{{"x":<0-100>,"y":<0-100>}}]
       }},
 
       "shot_map": {{
-        "shots": [
-          {{"x": <0-100>, "y": <0-100>, "xg": <float>, "outcome": "goal"|"saved"|"blocked"|"off_target", "body_part": "foot"|"head"|"other"}}
-        ]
+        "shots": [{{"x":<0-100>,"y":<0-100>,"xg":<0-1>,
+                   "outcome":"goal"|"saved"|"blocked"|"off_target",
+                   "body_part":"foot"|"head"|"other"}}],
+        "total_xg":<float>, "goals":<int>, "total_shots":<int>
       }},
 
-      "chance_creation": {{
-        "chances": [
-          {{"x_start": <0-100>, "y_start": <0-100>, "x_end": <0-100>, "y_end": <0-100>, "outcome": "goal"|"shot"|"blocked"}}
-        ]
+      "pass_network": {{
+        "nodes": [{{"id":<int>,"x":<0-100>,"y":<0-100>,"name":"..."}}],
+        "edges": [{{"from":<id>,"to":<id>,"count":<int>}}],
+        "formation":"..."
+      }},
+
+      "avg_positions": {{
+        "formation":"...",
+        "players": [{{"id":<int>,"x":<0-100>,"y":<0-100>,"name":"...","position":"GK"}}]
       }}
     }}
 
-    IMPORTANT coordinate system:
-    - x = 0 is left side of pitch, x = 100 is right side
-    - y = 0 is bottom (goal line), y = 100 is top (goal line)
-    - For pass networks, estimate positions from visual layout — be as precise as possible
-    - For touch/shot maps, read dot positions relative to pitch dimensions
-    - Shirt numbers are integers shown inside or next to circles on pass networks
-    - Edge thickness/weight = approximate number of passes (thin=1-3, medium=4-8, thick=9+)
-    - Nodes shown below the pitch (subs bench) should go in subs_bench array, NOT nodes array
-
-    Return ONLY the JSON object.
+    Coordinate system: x=0 left, x=100 right, y=0 bottom, y=100 top.
+    Shot maps: shots in attacking half (x>50 typically). Circle SIZE = xG. FILLED = goal.
+    For lineup/formation images: extract all shirt numbers and their pitch positions precisely.
+    Be as precise as possible with all coordinates.
     """)
 
-    headers = {
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    payload = {
-        "model": "claude-opus-4-6",
-        "max_tokens": 4000,
-        "system": system_prompt,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-                {"type": "text",  "text": user_prompt}
-            ]
-        }]
-    }
-
-    resp = requests.post("https://api.anthropic.com/v1/messages",
-                         headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    raw = resp.json()["content"][0]["text"].strip()
-
-    # Strip any accidental markdown fences
+    r = requests.post("https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"},
+        json={"model": "claude-opus-4-6", "max_tokens": 4096,
+              "messages": [{"role": "user", "content": [
+                  {"type": "image", "source": {"type": "base64",
+                   "media_type": "image/png", "data": b64}},
+                  {"type": "text", "text": prompt}
+              ]}]}, timeout=90)
+    r.raise_for_status()
+    raw = r.json()["content"][0]["text"].strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
-
     return json.loads(raw)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DRAW: TOUCH MAP
+# ─────────────────────────────────────────────────────────────────────────────
+def draw_touch_map(data, title, subtitle, brand):
+    tm     = data.get("touch_map", {})
+    succ   = tm.get("successful", [])
+    unsucc = tm.get("unsuccessful", [])
+
+    fig = _canvas()
+    ax  = _pitch_ax(fig)
+    _draw_pitch(ax)
+
+    if succ:
+        ax.scatter([_cx(p["x"]) for p in succ],
+                   [_cy(p["y"]) for p in succ],
+                   s=130, color=T["dot_ok"], alpha=0.88, zorder=4, edgecolors="none")
+    if unsucc:
+        ax.scatter([_cx(p["x"]) for p in unsucc],
+                   [_cy(p["y"]) for p in unsucc],
+                   s=100, color=T["dot_bad"], alpha=0.70, zorder=3, edgecolors="none")
+
+    handles = []
+    if succ:
+        handles.append(mpatches.Patch(color=T["dot_ok"],
+                        label=f"{len(succ)} Successful Touches"))
+    if unsucc:
+        handles.append(mpatches.Patch(color=T["dot_bad"],
+                        label=f"{len(unsucc)} Unsuccessful Touches"))
+    if handles:
+        leg = fig.legend(handles=handles, loc="lower center",
+                         bbox_to_anchor=(0.5, 0.022), ncol=2, frameon=False,
+                         fontsize=14, labelcolor=T["text"],
+                         handlelength=1.4, columnspacing=2.0)
+        plt.setp(leg.get_texts(), fontfamily="Montserrat", fontweight="700")
+
+    _labels(fig, title, subtitle, brand)
+    return _to_png(fig)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DRAWING FUNCTIONS  —  all output 1920×1080 px (Canva slide ready)
+# DRAW: SHOT MAP  (Athletic-style)
 # ─────────────────────────────────────────────────────────────────────────────
+def draw_shot_map(data, title, subtitle, brand,
+                  manual_goals=None, manual_xg=None, manual_shots=None,
+                  manual_right=None, manual_left=None, manual_head=None):
+    sm    = data.get("shot_map", {})
+    shots = sm.get("shots", [])
 
-# Canvas constants
-W_IN, H_IN = 19.2, 10.8   # inches at 100 dpi = 1920×1080
-DPI = 100
+    goals_val = manual_goals if manual_goals is not None else sm.get("goals", sum(1 for s in shots if s.get("outcome")=="goal"))
+    xg_val    = manual_xg   if manual_xg    is not None else sm.get("total_xg", sum(s.get("xg",0) for s in shots))
+    shots_val = manual_shots if manual_shots is not None else sm.get("total_shots", len(shots))
+    right_val = manual_right
+    left_val  = manual_left
+    head_val  = manual_head
 
-# Layout zones (as fractions of figure)
-TITLE_TOP    = 0.93   # title baseline
-SUBTITLE_TOP = 0.88   # subtitle baseline
-PITCH_TOP    = 0.85   # pitch axes top
-PITCH_BOT    = 0.10   # pitch axes bottom  (leaves room for legend)
-PITCH_LEFT   = 0.06
-PITCH_RIGHT  = 0.94
-BRAND_X      = 0.97
-BRAND_Y      = 0.02
+    fig = _canvas()
 
+    # Half pitch — left 58% of canvas
+    ax = fig.add_axes([0.03, 0.10, 0.58, 0.76])
+    ax.set_facecolor(T["pitch"])
+    ax.set_xlim(50, 107); ax.set_ylim(-2, 70)
+    ax.set_aspect("equal"); ax.axis("off")
+    _draw_half_pitch(ax)
 
-def _make_canvas():
-    """Create a 1920×1080 figure."""
-    fig = plt.figure(figsize=(W_IN, H_IN), dpi=DPI)
-    fig.patch.set_facecolor(BG)
-    return fig
+    for s in shots:
+        x   = _cx(s.get("x", 75))
+        y   = _cy(s.get("y", 34))
+        xg  = float(s.get("xg", 0.05))
+        out = str(s.get("outcome", "saved")).lower()
+        sz  = max(60, min(1200, 60 + xg * 2000))
 
+        if out == "goal":
+            ax.scatter(x, y, s=sz, color=T["dot_ok"], zorder=6,
+                       edgecolors=T["text"], linewidths=1.5)
+        else:
+            ax.scatter(x, y, s=sz, facecolors="none", zorder=5,
+                       edgecolors=T["dot_bad"], linewidths=1.5)
 
-def _make_pitch_ax(fig):
-    """
-    Add a pitch axes that fills the middle of the canvas,
-    preserving a real 105×68 m aspect ratio inside a landscape frame.
-    Pitch coordinate space: x=0-105, y=0-68.
-    """
-    ax = fig.add_axes([PITCH_LEFT, PITCH_BOT,
-                       PITCH_RIGHT - PITCH_LEFT,
-                       PITCH_TOP   - PITCH_BOT])
-    ax.set_facecolor(BG)
-    ax.set_xlim(0, 105)
-    ax.set_ylim(0, 68)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    return ax
+    # xG scale legend
+    fig.text(0.04, 0.055, "Low xG", fontsize=11, color=T["subtext"],
+             fontfamily="Montserrat", fontweight="600", va="bottom")
+    for i, sz in enumerate([25, 70, 140, 280, 480]):
+        r = 0.006 * (sz**0.42) / 3.2
+        cx_ = 0.13 + i * 0.028
+        fig.add_artist(plt.Circle((cx_, 0.062), r, transform=fig.transFigure,
+                                  facecolor="none", edgecolor=T["dot_bad"], lw=1.2, zorder=5))
+    fig.text(0.30, 0.055, "High xG", fontsize=11, color=T["subtext"],
+             fontfamily="Montserrat", fontweight="600", va="bottom")
 
+    fig.add_artist(plt.Circle((0.38, 0.062), 0.012, transform=fig.transFigure,
+                               facecolor=T["dot_ok"], edgecolor=T["text"], lw=1.2, zorder=5))
+    fig.text(0.402, 0.055, "Goal", fontsize=11, color=T["text"],
+             fontfamily="Montserrat", fontweight="700", va="bottom")
+    fig.add_artist(plt.Circle((0.48, 0.062), 0.012, transform=fig.transFigure,
+                               facecolor="none", edgecolor=T["dot_bad"], lw=1.2, zorder=5))
+    fig.text(0.502, 0.055, "No Goal", fontsize=11, color=T["text"],
+             fontfamily="Montserrat", fontweight="700", va="bottom")
 
-def _draw_pitch_lines(ax, lw=1.8):
-    """Draw standard pitch markings in 105×68 coordinate space."""
-    c = LINE_C
+    # Stats panel — right side
+    sx = 0.66
+    def _stat(yp, label, value, large=False):
+        fig.text(sx, yp, label, fontsize=13, fontweight="700",
+                 color=T["text"], fontfamily="Montserrat", va="top")
+        fig.text(sx, yp - 0.058, str(value), fontsize=28 if large else 22,
+                 fontweight="900", color=T["accent"], fontfamily="Montserrat", va="top")
 
-    def rect(x, y, w, h):
-        ax.add_patch(mpatches.Rectangle((x, y), w, h,
-                     fill=False, edgecolor=c, linewidth=lw, zorder=1))
+    fig.text(sx, 0.88, "SEASON STATS", fontsize=10, fontweight="900",
+             color=T["subtext"], fontfamily="Montserrat", va="top")
 
-    rect(0, 0, 105, 68)                  # outline
-    ax.plot([52.5, 52.5], [0, 68], color=c, lw=lw, zorder=1)   # halfway
-    ax.add_patch(plt.Circle((52.5, 34), 9.15,
-                 fill=False, edgecolor=c, lw=lw, zorder=1))
-    ax.scatter([52.5], [34], s=12, color=c, zorder=1)
-    # Penalty areas
-    rect(0,  13.84, 16.5, 40.32)
-    rect(88.5, 13.84, 16.5, 40.32)
-    # 6-yard boxes
-    rect(0,  24.84, 5.5, 18.32)
-    rect(99.5, 24.84, 5.5, 18.32)
-    # Goals
-    rect(-2, 29.84, 2, 8.32)
-    rect(105, 29.84, 2, 8.32)
-    # Centre spot
-    ax.scatter([52.5], [34], s=15, color=c, zorder=1)
-    # Penalty spots
-    ax.scatter([11, 94], [34, 34], s=15, color=c, zorder=1)
+    _stat(0.82, "Goals",       goals_val,  large=True)
+    _stat(0.70, "xG",          f"{xg_val:.2f}", large=True)
+    _stat(0.58, "Total Shots", shots_val)
+    xgps = xg_val / max(shots_val, 1) if shots_val else 0
+    _stat(0.50, "xG per Shot", f"{xgps:.2f}")
+    if right_val is not None: _stat(0.42, "Right Foot", right_val)
+    if left_val  is not None: _stat(0.34, "Left Foot",  left_val)
+    if head_val  is not None: _stat(0.26, "Head",       head_val)
 
+    _labels(fig, title, subtitle, brand, ty=0.96, sy=0.91)
+    return _to_png(fig)
 
-def _add_labels(fig, title, subtitle, brand):
-    """Add title, subtitle and brand to a 1920×1080 figure."""
-    if title:
-        fig.text(0.5, TITLE_TOP, title.upper(),
-                 ha="center", va="bottom", fontsize=28, fontweight="900",
-                 color=TEXT_C, fontfamily="Montserrat",
-                 path_effects=[pe.withStroke(linewidth=4, foreground=BG)])
-    if subtitle:
-        fig.text(0.5, SUBTITLE_TOP - 0.01, subtitle,
-                 ha="center", va="bottom", fontsize=16, fontweight="500",
-                 color="#6b7280", fontfamily="Montserrat")
-    if brand:
-        fig.text(BRAND_X, BRAND_Y, brand,
-                 ha="right", va="bottom", fontsize=13, fontweight="700",
-                 color="#374151", fontfamily="Montserrat")
-
-
-def _add_legend(fig, handles, y=0.065):
-    """Add a centred legend below the pitch."""
-    leg = fig.legend(handles=handles,
-                     loc="lower center",
-                     bbox_to_anchor=(0.5, y),
-                     ncol=len(handles),
-                     frameon=False,
-                     fontsize=14,
-                     labelcolor=TEXT_C,
-                     handlelength=1.2,
-                     handleheight=1.0,
-                     borderpad=0,
-                     columnspacing=2.0)
-    plt.setp(leg.get_texts(), fontfamily="Montserrat", fontweight="700")
-
-
-# ── Pass Network ──────────────────────────────────────────────────────────────
-
-def draw_pass_network(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
+# ─────────────────────────────────────────────────────────────────────────────
+# DRAW: PASS NETWORK
+# ─────────────────────────────────────────────────────────────────────────────
+def draw_pass_network(data, title, subtitle, brand):
     pn    = data.get("pass_network", {})
     nodes = pn.get("nodes", [])
     edges = pn.get("edges", [])
-
     if not nodes:
-        raise ValueError("No pass network nodes found in extracted data.")
+        raise ValueError("No pass network nodes found.")
 
-    fig = _make_canvas()
-    ax  = _make_pitch_ax(fig)
-    _draw_pitch_lines(ax)
-
-    # Convert incoming 0-100 coords → 105×68
-    def cx(v): return float(v) * 105 / 100
-    def cy(v): return float(v) * 68  / 100
+    fig = _canvas()
+    ax  = _pitch_ax(fig)
+    _draw_pitch(ax)
 
     node_map  = {n["id"]: n for n in nodes}
     max_count = max((e.get("count", 1) for e in edges), default=1)
 
-    # Edges
     for e in edges:
         f, t = e["from"], e["to"]
         if f not in node_map or t not in node_map: continue
         nf, nt = node_map[f], node_map[t]
         cnt   = e.get("count", 1)
-        alpha = 0.25 + 0.70 * (cnt / max_count)
-        lw    = 1.5  + 8.0  * (cnt / max_count)
-        ax.plot([cx(nf["x"]), cx(nt["x"])],
-                [cy(nf["y"]), cy(nt["y"])],
-                color=ACCENT, alpha=alpha, linewidth=lw, zorder=2,
+        alpha = 0.20 + 0.75 * (cnt / max_count)
+        lw    = 1.0  + 9.0  * (cnt / max_count)
+        ax.plot([_cx(nf["x"]), _cx(nt["x"])],
+                [_cy(nf["y"]), _cy(nt["y"])],
+                color=T["accent"], alpha=alpha, lw=lw, zorder=2,
                 solid_capstyle="round")
 
-    # Node sizes scaled by involvement
-    involvement = {n["id"]: sum(e.get("count", 1) for e in edges
-                                if e["from"] == n["id"] or e["to"] == n["id"])
-                   for n in nodes}
-    max_inv = max(involvement.values(), default=1)
+    inv = {n["id"]: sum(e.get("count",1) for e in edges
+                        if e["from"]==n["id"] or e["to"]==n["id"])
+           for n in nodes}
+    max_inv = max(inv.values(), default=1)
 
     for n in nodes:
-        inv = involvement.get(n["id"], 1)
-        sz  = 600 + 1400 * (inv / max_inv)
-        x, y = cx(n["x"]), cy(n["y"])
-        ax.scatter(x, y, s=sz, color=ACCENT, zorder=5,
-                   edgecolors="#ffffff", linewidths=2.5)
-        ax.text(x, y, str(n["id"]),
-                ha="center", va="center", fontsize=11, fontweight="900",
-                color="#000000" if ACCENT in ("#f59e0b", "#fbbf24") else "#ffffff",
+        x, y = _cx(n["x"]), _cy(n["y"])
+        sz   = 700 + 1600 * (inv.get(n["id"], 0) / max_inv)
+        ax.scatter(x, y, s=sz, color=T["accent"], zorder=5,
+                   edgecolors=T["text"], linewidths=2.0)
+        ax.text(x, y, str(n["id"]), ha="center", va="center",
+                fontsize=11, fontweight="900",
+                color="#000" if T["accent"] in ("#f59e0b","#fbbf24","#22c55e") else "#fff",
                 zorder=6, fontfamily="Montserrat")
         name = n.get("name", "")
         if name:
-            ax.text(x, y - 3.5, name,
-                    ha="center", va="top", fontsize=8, fontweight="600",
-                    color=TEXT_C, zorder=6, fontfamily="Montserrat",
-                    path_effects=[pe.withStroke(linewidth=2.5, foreground=BG)])
+            short = name.split()[-1] if " " in name else name
+            ax.text(x, y-3.8, short, ha="center", va="top",
+                    fontsize=8.5, fontweight="600", color=T["text"], zorder=6,
+                    fontfamily="Montserrat",
+                    path_effects=[mpe.withStroke(linewidth=2.5, foreground=T["bg"])])
 
-    _add_labels(fig, title, subtitle, brand)
-    return fig
+    _labels(fig, title, subtitle, brand)
+    return _to_png(fig)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DRAW: AVERAGE POSITIONS
+# ─────────────────────────────────────────────────────────────────────────────
+def draw_avg_positions(data, title, subtitle, brand):
+    ap      = data.get("avg_positions", {})
+    players = ap.get("players", [])
+    formation = ap.get("formation", "")
+    if not players:
+        raise ValueError("No player positions found.")
 
-# ── Touch Map ─────────────────────────────────────────────────────────────────
+    fig = _canvas()
+    ax  = _pitch_ax(fig)
+    _draw_pitch(ax)
 
-def draw_touch_map(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
+    POS_COLORS = {
+        "GK": "#a78bfa",
+        "CB": "#f97316", "LCB": "#f97316", "RCB": "#f97316",
+        "LB": "#fb923c", "RB": "#fb923c", "LWB": "#fbbf24", "RWB": "#fbbf24",
+        "DM": "#34d399", "DMF": "#34d399", "CM": "#4ade80",
+        "AM": "#60a5fa", "LW": "#93c5fd", "RW": "#93c5fd",
+        "ST": T["accent"], "CF": T["accent"],
+    }
+
+    for p in players:
+        x, y = _cx(p.get("x", 50)), _cy(p.get("y", 34))
+        pos  = str(p.get("position", "CM")).upper()
+        col  = POS_COLORS.get(pos, T["accent"])
+        ax.scatter(x, y, s=1000, color=col, zorder=5,
+                   edgecolors=T["text"], linewidths=2.0)
+        ax.text(x, y, str(p.get("id", "")), ha="center", va="center",
+                fontsize=11, fontweight="900", color="#000",
+                zorder=6, fontfamily="Montserrat")
+        name = p.get("name", "")
+        if name:
+            short = name.split()[-1] if " " in name else name
+            ax.text(x, y-4.2, short, ha="center", va="top",
+                    fontsize=8.5, fontweight="600", color=T["text"], zorder=6,
+                    fontfamily="Montserrat",
+                    path_effects=[mpe.withStroke(linewidth=2.5, foreground=T["bg"])])
+
+    if formation:
+        fig.text(0.5, 0.032, f"Formation: {formation}", ha="center",
+                 fontsize=13, fontweight="700", color=T["subtext"],
+                 fontfamily="Montserrat")
+
+    _labels(fig, title, subtitle, brand)
+    return _to_png(fig)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DRAW: HEAT MAP
+# ─────────────────────────────────────────────────────────────────────────────
+def draw_heat_map(data, title, subtitle, brand):
     tm     = data.get("touch_map", {})
-    succ   = tm.get("successful",   [])
+    succ   = tm.get("successful", [])
     unsucc = tm.get("unsuccessful", [])
+    all_pts = succ + unsucc
+    if not all_pts:
+        raise ValueError("No touch data for heat map.")
 
-    fig = _make_canvas()
-    ax  = _make_pitch_ax(fig)
-    _draw_pitch_lines(ax)
+    fig = _canvas()
+    ax  = _pitch_ax(fig)
 
-    def cx(v): return float(v) * 105 / 100
-    def cy(v): return float(v) * 68  / 100
+    grid = np.zeros((68*4, 105*4))
+    for p in all_pts:
+        gx = int(np.clip(_cx(p["x"])*4, 0, 105*4-1))
+        gy = int(np.clip(_cy(p["y"])*4, 0, 68*4-1))
+        grid[gy, gx] += 1
+    grid = gaussian_filter(grid, sigma=12)
 
-    if succ:
-        ax.scatter([cx(p["x"]) for p in succ],
-                   [cy(p["y"]) for p in succ],
-                   s=120, color=ACCENT, alpha=0.85, zorder=4,
-                   edgecolors="none")
-    if unsucc:
-        ax.scatter([cx(p["x"]) for p in unsucc],
-                   [cy(p["y"]) for p in unsucc],
-                   s=100, color="#9ca3af", alpha=0.60, zorder=3,
-                   edgecolors="none")
-
-    handles = []
-    if succ:
-        handles.append(mpatches.Patch(color=ACCENT,   label=f"{len(succ)} Successful Touches"))
-    if unsucc:
-        handles.append(mpatches.Patch(color="#9ca3af", label=f"{len(unsucc)} Unsuccessful Touches"))
-    if handles:
-        _add_legend(fig, handles)
-
-    _add_labels(fig, title, subtitle, brand)
-    return fig
-
-
-# ── Shot Map ──────────────────────────────────────────────────────────────────
-
-def draw_shot_map(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    sm    = data.get("shot_map", {})
-    shots = sm.get("shots", [])
-
-    fig = _make_canvas()
-    # Use only attacking half — x: 52.5 to 107
-    ax = fig.add_axes([0.15, PITCH_BOT, 0.70, PITCH_TOP - PITCH_BOT])
-    ax.set_facecolor(BG)
-    ax.set_xlim(52.5, 107)
-    ax.set_ylim(0, 68)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    c = LINE_C
-    ax.add_patch(mpatches.Rectangle((52.5, 0), 52.5, 68,
-                 fill=False, edgecolor=c, lw=1.8, zorder=1))
-    ax.plot([52.5, 52.5], [0, 68], color=c, lw=1.8, zorder=1)
-    ax.add_patch(plt.Circle((52.5, 34), 9.15,
-                 fill=False, edgecolor=c, lw=1.5, zorder=1))
-    ax.add_patch(mpatches.Rectangle((88.5, 13.84), 16.5, 40.32,
-                 fill=False, edgecolor=c, lw=1.5, zorder=1))
-    ax.add_patch(mpatches.Rectangle((99.5, 24.84), 5.5, 18.32,
-                 fill=False, edgecolor=c, lw=1.5, zorder=1))
-    ax.add_patch(mpatches.Rectangle((105, 29.84), 2, 8.32,
-                 fill=False, edgecolor=c, lw=1.5, zorder=1))
-
-    OUTCOME_STYLE = {
-        "goal":       {"color": ACCENT,    "marker": "*", "base": 600, "alpha": 1.0},
-        "saved":      {"color": "#3b82f6", "marker": "o", "base": 200, "alpha": 0.9},
-        "blocked":    {"color": "#9ca3af", "marker": "s", "base": 160, "alpha": 0.8},
-        "off_target": {"color": "#4b5563", "marker": "X", "base": 160, "alpha": 0.7},
-    }
-
-    for shot in shots:
-        outcome = shot.get("outcome", "saved").lower()
-        style   = OUTCOME_STYLE.get(outcome, OUTCOME_STYLE["saved"])
-        xg      = shot.get("xg", 0.05)
-        size    = style["base"] * (0.5 + 2.5 * xg)
-        x = float(shot["x"]) * 105 / 100
-        y = float(shot["y"]) * 68  / 100
-        ax.scatter(x, y, s=size, color=style["color"],
-                   marker=style["marker"], alpha=style["alpha"], zorder=4,
-                   edgecolors="#ffffff" if outcome == "goal" else "none",
-                   linewidths=2.0)
-
-    total_xg = sum(s.get("xg", 0) for s in shots)
-    goals     = sum(1 for s in shots if s.get("outcome") == "goal")
-
-    handles = [
-        mpatches.Patch(color=ACCENT,    label="Goal"),
-        mpatches.Patch(color="#3b82f6", label="Saved"),
-        mpatches.Patch(color="#9ca3af", label="Blocked"),
-        mpatches.Patch(color="#4b5563", label="Off Target"),
-    ]
-    _add_legend(fig, handles)
-
-    fig.text(0.5, 0.055,
-             f"{goals} Goals  ·  {total_xg:.2f} xG",
-             ha="center", va="bottom", fontsize=15, fontweight="700",
-             color=TEXT_C, fontfamily="Montserrat")
-
-    _add_labels(fig, title, subtitle, brand)
-    return fig
-
-
-# ── Chance Creation ───────────────────────────────────────────────────────────
-
-def draw_chance_creation(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    cc      = data.get("chance_creation", {})
-    chances = cc.get("chances", [])
-
-    fig = _make_canvas()
-    ax  = _make_pitch_ax(fig)
-    _draw_pitch_lines(ax)
-
-    def cx(v): return float(v) * 105 / 100
-    def cy(v): return float(v) * 68  / 100
-
-    OUTCOME_C = {
-        "goal":    ACCENT,
-        "shot":    "#3b82f6",
-        "blocked": "#9ca3af",
-    }
-
-    for c in chances:
-        col = OUTCOME_C.get(c.get("outcome", "shot"), "#3b82f6")
-        ax.annotate("",
-                    xy=(cx(c["x_end"]), cy(c["y_end"])),
-                    xytext=(cx(c["x_start"]), cy(c["y_start"])),
-                    arrowprops=dict(arrowstyle="-|>", color=col,
-                                   lw=2.2, mutation_scale=18),
-                    zorder=4)
-        ax.scatter(cx(c["x_start"]), cy(c["y_start"]),
-                   s=60, color=col, alpha=0.7, zorder=5, edgecolors="none")
-
-    handles = [
-        mpatches.Patch(color=ACCENT,    label="Led to Goal"),
-        mpatches.Patch(color="#3b82f6", label="Led to Shot"),
-        mpatches.Patch(color="#9ca3af", label="Blocked / Lost"),
-    ]
-    _add_legend(fig, handles)
-    _add_labels(fig, title, subtitle, brand)
-    return fig
-
-
-def dispatch_draw(data: dict, title: str, subtitle: str, brand: str) -> plt.Figure:
-    vt = data.get("viz_type", "").lower()
-    if "pass" in vt:
-        return draw_pass_network(data, title, subtitle, brand)
-    elif "touch" in vt or "heat" in vt:
-        return draw_touch_map(data, title, subtitle, brand)
-    elif "shot" in vt:
-        return draw_shot_map(data, title, subtitle, brand)
-    elif "chance" in vt or "creation" in vt:
-        return draw_chance_creation(data, title, subtitle, brand)
+    if theme_name == "Light (Athletic)":
+        cmap_colors = ["#f8f5f0","#dbeafe","#93c5fd","#3b82f6","#1d4ed8","#7c3aed","#ef4444"]
     else:
-        # Fallback: try to guess from keys present
-        if "pass_network" in data:
-            return draw_pass_network(data, title, subtitle, brand)
-        elif "touch_map" in data:
-            return draw_touch_map(data, title, subtitle, brand)
-        elif "shot_map" in data:
-            return draw_shot_map(data, title, subtitle, brand)
-        elif "chance_creation" in data:
-            return draw_chance_creation(data, title, subtitle, brand)
-        raise ValueError(f"Could not determine viz type from: {vt}")
+        cmap_colors = ["#0a0f1c","#1e3a5f","#1d4ed8","#7c3aed","#ef4444","#f97316","#fbbf24"]
+    cmap = LinearSegmentedColormap.from_list("heat", cmap_colors)
 
+    ax.imshow(grid, extent=[0,105,0,68], origin="lower",
+              cmap=cmap, alpha=0.88, aspect="auto", zorder=2)
+    _draw_pitch(ax, lw=1.8)
+
+    _labels(fig, title, subtitle, brand)
+    return _to_png(fig)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN UI
+# UI HELPER
 # ─────────────────────────────────────────────────────────────────────────────
+def _empty_box(ph):
+    ph.markdown("""<div style="background:#0d1220;border:1px dashed #1e2d4a;
+        border-radius:10px;padding:80px;text-align:center;color:#374151;
+        font-size:13px;font-weight:700;">Upload a screenshot to get started</div>""",
+        unsafe_allow_html=True)
 
-col_upload, col_output = st.columns([1, 1.6], gap="large")
+def _prep_image(uploaded):
+    img = Image.open(uploaded).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
-with col_upload:
-    st.markdown('<div style="font-size:10px;font-weight:900;letter-spacing:.2em;color:#6b7280;text-transform:uppercase;margin-bottom:12px;">INPUT</div>', unsafe_allow_html=True)
+def _auto_labels(data):
+    t = title_in or data.get("team", "")
+    s = subtitle_in or " · ".join(filter(None, [
+        data.get("opponent",""), data.get("competition",""), data.get("date","")]))
+    return t, s
 
-    uploaded = st.file_uploader(
-        "Upload screenshot",
-        type=["png", "jpg", "jpeg", "webp"],
-        key="upload",
-        label_visibility="collapsed",
-    )
-    st.markdown('<div class="upload-hint">PNG / JPG / WEBP · Pass networks, touch maps, shot maps, chance creation</div>', unsafe_allow_html=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN HEADER
+# ─────────────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="padding:24px 0 18px;border-bottom:1px solid #1a2540;margin-bottom:24px;">
+  <div style="font-size:10px;font-weight:900;letter-spacing:.3em;color:#ef4444;margin-bottom:6px;">FOOTBALL ANALYTICS</div>
+  <h1 style="font-size:36px;font-weight:900;color:#fff;margin:0;">VIZ REDRAW</h1>
+  <div style="color:#4b5563;font-size:13px;margin-top:6px;">
+    Screenshot → AI extracts data → redrawn at 1920×1080 · inspired by The Athletic
+  </div>
+</div>""", unsafe_allow_html=True)
 
-    if uploaded:
-        img_bytes = uploaded.read()
-        # Convert to PNG for consistency
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        img_bytes_png = buf.getvalue()
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📍 Touch Map", "🎯 Shot Map", "🔗 Pass Network",
+    "📌 Avg Positions", "🌡️ Heat Map"
+])
 
-        st.markdown("<div style='margin-top:16px;'>", unsafe_allow_html=True)
-        st.image(img, caption="Original screenshot", use_column_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — TOUCH MAP
+# ══════════════════════════════════════════════════════════════════════════════
+with tab1:
+    c1, c2 = st.columns([1, 1.8], gap="large")
+    with c1:
+        up1 = st.file_uploader("Touch map screenshot", type=["png","jpg","jpeg","webp"],
+                                key="up1", label_visibility="collapsed")
+        if up1:
+            st.image(Image.open(up1), use_column_width=True)
+            go1 = st.button("EXTRACT & REDRAW", key="go1", use_container_width=True)
+        else:
+            go1 = False
+    with c2:
+        ph1 = st.empty(); _empty_box(ph1)
+        if go1 and up1:
+            if not api_key: st.error("Enter API key in sidebar.")
+            else:
+                with st.spinner("Reading viz…"):
+                    try: data = call_claude(_prep_image(up1), "touch map", api_key)
+                    except Exception as e: st.error(f"Error: {e}"); st.stop()
+                with st.spinner("Drawing…"):
+                    t, s = _auto_labels(data)
+                    png = draw_touch_map(data, t, s, brand_in)
+                ph1.image(png, use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG", png,
+                    f"{(t or 'touchmap').replace(' ','_')}.png", "image/png",
+                    use_container_width=True, key="dl1")
+                with st.expander("Extracted JSON"): st.json(data)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — SHOT MAP
+# ══════════════════════════════════════════════════════════════════════════════
+with tab2:
+    c1, c2 = st.columns([1, 1.8], gap="large")
+    with c1:
+        up2 = st.file_uploader("Shot map screenshot", type=["png","jpg","jpeg","webp"],
+                                key="up2", label_visibility="collapsed")
+        if up2:
+            st.image(Image.open(up2), use_column_width=True)
 
         st.markdown("---")
-        run_btn = st.button("⚡ EXTRACT & REDRAW", use_container_width=True)
-    else:
-        run_btn = False
-        img_bytes_png = None
+        st.markdown("**Manual Stats Panel** *(tick to override extracted)*")
+        use_manual = st.checkbox("Use manual stats", key="use_manual")
+        m_goals = st.number_input("Goals",       0, 100, 0, key="m_goals")
+        m_xg    = st.number_input("xG",          0.0, 100.0, 0.0, step=0.01, format="%.2f", key="m_xg")
+        m_shots = st.number_input("Total Shots", 0, 200, 0, key="m_shots")
+        m_right = st.number_input("Right Foot",  0, 200, 0, key="m_right")
+        m_left  = st.number_input("Left Foot",   0, 200, 0, key="m_left")
+        m_head  = st.number_input("Head",        0, 200, 0, key="m_head")
 
-with col_output:
-    st.markdown('<div style="font-size:10px;font-weight:900;letter-spacing:.2em;color:#6b7280;text-transform:uppercase;margin-bottom:12px;">OUTPUT</div>', unsafe_allow_html=True)
+        if up2:
+            go2 = st.button("EXTRACT & REDRAW", key="go2", use_container_width=True)
+        else:
+            go2 = False
+    with c2:
+        ph2 = st.empty(); _empty_box(ph2)
+        if go2 and up2:
+            if not api_key: st.error("Enter API key in sidebar.")
+            else:
+                with st.spinner("Reading viz…"):
+                    try: data = call_claude(_prep_image(up2), "shot map / xG map", api_key)
+                    except Exception as e: st.error(f"Error: {e}"); st.stop()
+                with st.spinner("Drawing…"):
+                    t, s = _auto_labels(data)
+                    png = draw_shot_map(data, t, s, brand_in,
+                        manual_goals = m_goals if use_manual else None,
+                        manual_xg    = m_xg    if use_manual else None,
+                        manual_shots = m_shots  if use_manual else None,
+                        manual_right = m_right  if use_manual else None,
+                        manual_left  = m_left   if use_manual else None,
+                        manual_head  = m_head   if use_manual else None)
+                ph2.image(png, use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG", png,
+                    f"{(t or 'shotmap').replace(' ','_')}.png", "image/png",
+                    use_container_width=True, key="dl2")
+                with st.expander("Extracted JSON"): st.json(data)
 
-    output_placeholder = st.empty()
-    json_placeholder   = st.empty()
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — PASS NETWORK
+# ══════════════════════════════════════════════════════════════════════════════
+with tab3:
+    c1, c2 = st.columns([1, 1.8], gap="large")
+    with c1:
+        up3 = st.file_uploader("Pass network screenshot", type=["png","jpg","jpeg","webp"],
+                                key="up3", label_visibility="collapsed")
+        if up3:
+            st.image(Image.open(up3), use_column_width=True)
+            go3 = st.button("EXTRACT & REDRAW", key="go3", use_container_width=True)
+        else:
+            go3 = False
+    with c2:
+        ph3 = st.empty(); _empty_box(ph3)
+        if go3 and up3:
+            if not api_key: st.error("Enter API key in sidebar.")
+            else:
+                with st.spinner("Reading viz…"):
+                    try: data = call_claude(_prep_image(up3), "pass network", api_key)
+                    except Exception as e: st.error(f"Error: {e}"); st.stop()
+                with st.spinner("Drawing…"):
+                    t, s = _auto_labels(data)
+                    try: png = draw_pass_network(data, t, s, brand_in)
+                    except ValueError as e: st.error(str(e)); st.stop()
+                ph3.image(png, use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG", png,
+                    f"{(t or 'passnet').replace(' ','_')}.png", "image/png",
+                    use_container_width=True, key="dl3")
+                with st.expander("Extracted JSON"): st.json(data)
 
-    if not uploaded:
-        output_placeholder.markdown("""
-        <div style="background:#0d1220;border:1px dashed #1e2d4a;border-radius:12px;
-                    padding:60px 20px;text-align:center;color:#374151;">
-          <div style="font-size:32px;margin-bottom:12px;">🎨</div>
-          <div style="font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;">
-            Redraw will appear here
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — AVERAGE POSITIONS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab4:
+    st.caption("Works with lineup screenshots from Sofascore, Livescore, WhoScored, Opta etc.")
+    c1, c2 = st.columns([1, 1.8], gap="large")
+    with c1:
+        up4 = st.file_uploader("Lineup / formation screenshot", type=["png","jpg","jpeg","webp"],
+                                key="up4", label_visibility="collapsed")
+        if up4:
+            st.image(Image.open(up4), use_column_width=True)
+            go4 = st.button("EXTRACT & REDRAW", key="go4", use_container_width=True)
+        else:
+            go4 = False
+    with c2:
+        ph4 = st.empty(); _empty_box(ph4)
+        if go4 and up4:
+            if not api_key: st.error("Enter API key in sidebar.")
+            else:
+                with st.spinner("Reading viz…"):
+                    try: data = call_claude(_prep_image(up4),
+                                "average positions / lineup / formation", api_key)
+                    except Exception as e: st.error(f"Error: {e}"); st.stop()
+                with st.spinner("Drawing…"):
+                    t, s = _auto_labels(data)
+                    try: png = draw_avg_positions(data, t, s, brand_in)
+                    except ValueError as e: st.error(str(e)); st.stop()
+                ph4.image(png, use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG", png,
+                    f"{(t or 'avgpos').replace(' ','_')}.png", "image/png",
+                    use_container_width=True, key="dl4")
+                with st.expander("Extracted JSON"): st.json(data)
 
-if run_btn and img_bytes_png:
-    if not api_key:
-        st.error("⚠️ Enter your Anthropic API key in the sidebar to continue.")
-    else:
-        with col_output:
-            with st.spinner("🔍 Claude is reading your viz..."):
-                try:
-                    hint = viz_type if viz_type != "Auto-detect" else "unknown — please detect from the image"
-                    extracted = call_claude_vision(img_bytes_png, hint, api_key)
-                except json.JSONDecodeError as e:
-                    st.error(f"JSON parse error: {e}\n\nClaude may have returned non-JSON — check your API key and try again.")
-                    st.stop()
-                except Exception as e:
-                    st.error(f"API error: {e}")
-                    st.stop()
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — HEAT MAP
+# ══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.caption("Upload a touch map screenshot — dots are converted into a gaussian heat map.")
+    c1, c2 = st.columns([1, 1.8], gap="large")
+    with c1:
+        up5 = st.file_uploader("Touch map screenshot (for heat)", type=["png","jpg","jpeg","webp"],
+                                key="up5", label_visibility="collapsed")
+        if up5:
+            st.image(Image.open(up5), use_column_width=True)
+            go5 = st.button("EXTRACT & REDRAW", key="go5", use_container_width=True)
+        else:
+            go5 = False
+    with c2:
+        ph5 = st.empty(); _empty_box(ph5)
+        if go5 and up5:
+            if not api_key: st.error("Enter API key in sidebar.")
+            else:
+                with st.spinner("Reading viz…"):
+                    try: data = call_claude(_prep_image(up5), "touch map", api_key)
+                    except Exception as e: st.error(f"Error: {e}"); st.stop()
+                with st.spinner("Drawing heat map…"):
+                    t, s = _auto_labels(data)
+                    try: png = draw_heat_map(data, t, s, brand_in)
+                    except ValueError as e: st.error(str(e)); st.stop()
+                ph5.image(png, use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG", png,
+                    f"{(t or 'heatmap').replace(' ','_')}.png", "image/png",
+                    use_container_width=True, key="dl5")
+                with st.expander("Extracted JSON"): st.json(data)
 
-            # Auto-fill title/subtitle from extracted metadata if not set
-            auto_title    = title_text or extracted.get("team_name", "")
-            auto_subtitle = subtitle_text or " · ".join(filter(None, [
-                extracted.get("opponent", ""),
-                extracted.get("competition", ""),
-                extracted.get("date", ""),
-            ]))
-
-            with st.spinner("🎨 Drawing your professional viz..."):
-                try:
-                    fig = dispatch_draw(extracted, auto_title, auto_subtitle, brand_text)
-                except ValueError as e:
-                    st.error(f"Drawing error: {e}")
-                    st.stop()
-
-            # Render figure — exact 1920×1080 (19.2in × 10.8in @ 100dpi)
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=100,
-                        facecolor=BG, bbox_inches=None)
-            plt.close(fig)
-            img_out = buf.getvalue()
-
-            output_placeholder.image(img_out, use_column_width=True)
-
-            st.download_button(
-                "⬇️  Download PNG",
-                data=img_out,
-                file_name=f"{(auto_title or 'viz').replace(' ', '_')}_redrawn.png",
-                mime="image/png",
-                use_container_width=True,
-            )
-
-            # Show extracted JSON in expander
-            with json_placeholder.expander("📋 Extracted data (JSON)", expanded=False):
-                st.json(extracted)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HOW IT WORKS
-# ─────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("""
-<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px;">
-  <div style="background:#0d1220;border:1px solid #1e2d4a;border-radius:10px;padding:20px;">
-    <div style="font-size:20px;margin-bottom:8px;">📸</div>
-    <div style="font-size:10px;font-weight:900;letter-spacing:.15em;color:#ef4444;text-transform:uppercase;margin-bottom:6px;">01 · Upload</div>
-    <div style="color:#6b7280;font-size:12px;line-height:1.6;">Screenshot any football viz — from Opta Analyst, WhoScored, Wyscout, FBref or anywhere else.</div>
-  </div>
-  <div style="background:#0d1220;border:1px solid #1e2d4a;border-radius:10px;padding:20px;">
-    <div style="font-size:20px;margin-bottom:8px;">🤖</div>
-    <div style="font-size:10px;font-weight:900;letter-spacing:.15em;color:#ef4444;text-transform:uppercase;margin-bottom:6px;">02 · Extract</div>
-    <div style="color:#6b7280;font-size:12px;line-height:1.6;">Claude vision reads every node, dot and line — extracting coordinates, values and labels into structured JSON.</div>
-  </div>
-  <div style="background:#0d1220;border:1px solid #1e2d4a;border-radius:10px;padding:20px;">
-    <div style="font-size:20px;margin-bottom:8px;">✨</div>
-    <div style="font-size:10px;font-weight:900;letter-spacing:.15em;color:#ef4444;text-transform:uppercase;margin-bottom:6px;">03 · Redraw</div>
-    <div style="color:#6b7280;font-size:12px;line-height:1.6;">The data is redrawn from scratch in your brand style — dark theme, Montserrat typography, custom accent colour.</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<div style="margin-top:24px;padding:16px;background:#0d1220;border:1px solid #1e2d4a;border-radius:10px;">
-  <div style="font-size:10px;font-weight:900;letter-spacing:.15em;color:#6b7280;text-transform:uppercase;margin-bottom:8px;">Supported viz types</div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <span style="background:#1e2d4a;color:#94a3b8;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:700;">Pass Network</span>
-    <span style="background:#1e2d4a;color:#94a3b8;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:700;">Touch Map</span>
-    <span style="background:#1e2d4a;color:#94a3b8;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:700;">Shot Map</span>
-    <span style="background:#1e2d4a;color:#94a3b8;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:700;">Heat Map</span>
-    <span style="background:#1e2d4a;color:#94a3b8;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:700;">Chance Creation</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+st.caption("VIZ REDRAW · 1920×1080 output · Inspired by The Athletic")

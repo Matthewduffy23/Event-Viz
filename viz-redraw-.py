@@ -212,17 +212,19 @@ Return:
     "pass_network": """You are a football data extraction engine.
 Extract pass network data from this screenshot. Return ONLY valid JSON, no explanation, no markdown.
 
-Rules:
-- Nodes are circles containing shirt numbers, positioned on the pitch
-- Edges are lines directly connecting two nodes — only include a line if you can clearly SEE it drawn between two specific nodes
-- Do NOT invent edges. Do NOT include an edge unless there is a visible line between those two nodes
-- Do NOT omit edges that are clearly visible
-- Player names/surnames appear as small text near each node — read them carefully
-- Nodes shown outside/below the pitch are substitutes, put in subs_bench not nodes
-- x=0 is left edge of pitch, x=100 is right edge. y=0 is bottom, y=100 is top
-- Positions are relative to the pitch rectangle, not the full image
+NODES — circles on the pitch containing shirt numbers:
+- Read the number inside each circle
+- Measure x position left-to-right within the pitch area (0=left edge, 100=right edge)
+- Measure y position bottom-to-top within the pitch area (0=bottom, 100=top)
+- Read the player surname written near the circle if visible — use "" if not readable
+- Nodes shown BELOW or OUTSIDE the pitch are substitutes → subs_bench only
 
-Edge thickness → count: very thin=3, thin=5, medium=9, thick=14, very thick=20
+EDGES — lines drawn between nodes:
+- Look at each pair of nodes. Is there a line physically drawn between them? YES or NO.
+- ONLY include an edge if a line is clearly and directly drawn between those two nodes
+- If you are not sure whether a line exists, DO NOT include it
+- Count every edge pair only once (7→27 and 27→7 are the same edge)
+- Edge count from thickness: thin=4, medium=9, thick=15
 
 Return:
 {
@@ -232,8 +234,8 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <shirt_no_int>, "x": <0-100>, "y": <0-100>, "name": "<surname or empty string>"}],
-    "edges": [{"from": <id>, "to": <id>, "count": <3-20>}],
+    "nodes": [{"id": <shirt_no_int>, "x": <0-100>, "y": <0-100>, "name": "<surname or empty>"}],
+    "edges": [{"from": <id>, "to": <id>, "count": <4-15>}],
     "formation": "...",
     "subs_bench": [<shirt_no>, ...]
   }
@@ -454,39 +456,46 @@ def draw_pass_network(data, title, subtitle, brand):
     node_map  = {n["id"]: n for n in nodes}
     max_count = max((e.get("count", 1) for e in edges), default=1)
 
+    # Draw edges first (behind nodes)
     for e in edges:
         f, t = e["from"], e["to"]
         if f not in node_map or t not in node_map: continue
         nf, nt = node_map[f], node_map[t]
         cnt   = e.get("count", 1)
-        alpha = 0.20 + 0.75 * (cnt / max_count)
-        lw    = 1.0  + 9.0  * (cnt / max_count)
+        alpha = 0.25 + 0.70 * (cnt / max_count)
+        lw    = 1.5  + 8.5  * (cnt / max_count)
         ax.plot([_cx(nf["x"]), _cx(nt["x"])],
                 [_cy(nf["y"]), _cy(nt["y"])],
                 color=T["accent"], alpha=alpha, lw=lw, zorder=2,
                 solid_capstyle="round")
 
+    # Node size by involvement
     inv = {n["id"]: sum(e.get("count",1) for e in edges
                         if e["from"]==n["id"] or e["to"]==n["id"])
            for n in nodes}
     max_inv = max(inv.values(), default=1)
 
+    # Draw nodes and labels
+    txt_col = "#000" if T["accent"] in ("#f59e0b","#fbbf24","#22c55e") else "#fff"
     for n in nodes:
         x, y = _cx(n["x"]), _cy(n["y"])
-        sz   = 700 + 1600 * (inv.get(n["id"], 0) / max_inv)
+        sz   = 700 + 1400 * (inv.get(n["id"], 0) / max_inv)
+        # Node circle
         ax.scatter(x, y, s=sz, color=T["accent"], zorder=5,
                    edgecolors=T["text"], linewidths=2.0)
+        # Shirt number inside
         ax.text(x, y, str(n["id"]), ha="center", va="center",
-                fontsize=11, fontweight="900",
-                color="#000" if T["accent"] in ("#f59e0b","#fbbf24","#22c55e") else "#fff",
+                fontsize=11, fontweight="900", color=txt_col,
                 zorder=6, fontfamily="Montserrat")
-        name = n.get("name", "")
+        # Name below — show if non-empty
+        name = (n.get("name") or "").strip()
         if name:
-            short = name.split()[-1] if " " in name else name
-            ax.text(x, y-3.8, short, ha="center", va="top",
-                    fontsize=8.5, fontweight="600", color=T["text"], zorder=6,
-                    fontfamily="Montserrat",
-                    path_effects=[mpe.withStroke(linewidth=2.5, foreground=T["bg"])])
+            # Use last word (surname) only, capitalised
+            surname = name.split()[-1].capitalize()
+            ax.text(x, y - 4.2, surname,
+                    ha="center", va="top", fontsize=9, fontweight="700",
+                    color=T["text"], zorder=6, fontfamily="Montserrat",
+                    path_effects=[mpe.withStroke(linewidth=3, foreground=T["bg"])])
 
     _labels(fig, title, subtitle, brand)
     return _to_png(fig)

@@ -212,25 +212,28 @@ Return:
     "pass_network": """You are a football data extraction engine.
 Extract pass network data from this screenshot. Return ONLY valid JSON, no explanation, no markdown.
 
-STEP 1 — READ ALL TEXT LABELS FIRST
-Before anything else, scan the entire image for player name text. In pass network visualisations, each circle has a small surname written directly below or beside it. Read every name label carefully — they may be small or light coloured. Write down each shirt number and its associated surname.
+STEP 1 — READ ALL TEXT LABELS
+Scan the entire image for player surnames written near each circle. Note each one carefully.
 
-STEP 2 — NODES
-For each numbered circle ON the pitch:
-- id: the number inside the circle (integer)
-- x: left-to-right position within the pitch rectangle (0=left, 100=right)
-- y: bottom-to-top position within the pitch rectangle (0=bottom, 100=top)
-- name: the surname you read in Step 1 for this shirt number. NEVER leave blank if you saw a label.
+STEP 2 — FIND THE PITCH BOUNDARIES
+Identify the four edges of the actual grass/pitch rectangle (ignore any surrounding UI, panel, legend, title).
+Note in your head: pitch_left, pitch_right, pitch_top, pitch_bottom (as pixel positions).
 
-STEP 3 — EDGES
-Look at the coloured/highlighted lines connecting circles. For each line:
-- Trace it from start circle to end circle
-- Record the two shirt numbers
+STEP 3 — NODES
+For each numbered circle that sits INSIDE the pitch rectangle:
+- id: number inside the circle
+- x: ((circle_centre_x - pitch_left) / (pitch_right - pitch_left)) * 100   → value 0-100
+- y: ((pitch_bottom - circle_centre_y) / (pitch_bottom - pitch_top)) * 100  → value 0-100 (0=bottom, 100=top)
+- name: surname from Step 1 for this shirt number
+
+STEP 4 — EDGES
+For each coloured line you can physically trace between two circles:
+- from/to: the two shirt numbers
 - count: line thickness — thin=4, medium=9, thick=15
-Only include lines you can physically see. Do not add edges just because nodes are close.
+Do NOT add an edge unless you can see a drawn line.
 
-STEP 4 — SUBS
-Circles outside/below the pitch go in subs_bench only.
+STEP 5 — SUBS
+Circles outside the pitch → subs_bench only.
 
 Return:
 {
@@ -240,7 +243,7 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname — required>"}],
+    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname>"}],
     "edges": [{"from": <int>, "to": <int>, "count": <4-15>}],
     "formation": "...",
     "subs_bench": [<int>, ...]

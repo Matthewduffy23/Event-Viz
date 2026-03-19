@@ -716,33 +716,86 @@ with tab2:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — PASS NETWORK
 # ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — PASS NETWORK
+# ══════════════════════════════════════════════════════════════════════════════
 with tab3:
+    # Phase 1: upload + extract nodes
     c1, c2 = st.columns([1, 1.8], gap="large")
     with c1:
         up3 = st.file_uploader("Pass network screenshot", type=["png","jpg","jpeg","webp"],
                                 key="up3", label_visibility="collapsed")
         if up3:
             st.image(Image.open(up3), use_column_width=True)
-            go3 = st.button("EXTRACT & REDRAW", key="go3", use_container_width=True)
-        else:
-            go3 = False
+            if st.button("EXTRACT PLAYERS", key="go3", use_container_width=True):
+                if not api_key:
+                    st.error("Enter API key in sidebar.")
+                else:
+                    for k in ["pn_data","pn_png","pn_title"]:
+                        st.session_state.pop(k, None)
+                    with st.spinner("Reading players and positions..."):
+                        try:
+                            st.session_state["pn_data"] = call_claude(
+                                _prep_image(up3), "pass network", api_key)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
     with c2:
-        ph3 = st.empty(); _empty_box(ph3)
-        if go3 and up3:
-            if not api_key: st.error("Enter API key in sidebar.")
-            else:
-                with st.spinner("Reading viz..."):
-                    try: data = call_claude(_prep_image(up3), "pass network", api_key)
-                    except Exception as e: st.error(f"Error: {e}"); st.stop()
-                with st.spinner("Drawing..."):
-                    t, s = _auto_labels(data)
-                    try: png = draw_pass_network(data, t, s, brand_in)
-                    except ValueError as e: st.error(str(e)); st.stop()
-                ph3.image(png, use_column_width=True)
-                st.download_button("⬇️ Download 1920×1080 PNG", png,
-                    f"{(t or 'passnet').replace(' ','_')}.png", "image/png",
-                    use_container_width=True, key="dl3")
-                with st.expander("Extracted JSON"): st.json(data)
+        ph3 = st.empty()
+        if "pn_png" in st.session_state:
+            ph3.image(st.session_state["pn_png"], use_column_width=True)
+            st.download_button("⬇️ Download 1920×1080 PNG",
+                st.session_state["pn_png"],
+                f"{(st.session_state.get('pn_title') or 'passnet').replace(' ','_')}.png",
+                "image/png", use_container_width=True, key="dl3")
+        else:
+            _empty_box(ph3)
+
+    # Phase 2: once nodes extracted, show connection picker
+    if "pn_data" in st.session_state:
+        data  = st.session_state["pn_data"]
+        pn    = data.get("pass_network", {})
+        nodes = pn.get("nodes", [])
+        nmap  = {n["id"]: (n.get("name") or "").strip() for n in nodes}
+        node_ids = sorted([n["id"] for n in nodes])
+
+        st.markdown("---")
+        st.markdown("""<div style='font-size:10px;font-weight:900;letter-spacing:.15em;
+            color:#ef4444;margin-bottom:6px;'>STEP 2 — TICK THE CONNECTIONS</div>
+            <div style='color:#6b7280;font-size:12px;margin-bottom:12px;'>
+            Look at your original image. Tick every pair that has a line between them.
+            Use the thickness slider to set how thick each line should be.
+            </div>""", unsafe_allow_html=True)
+
+        # Build all possible pairs as checkboxes
+        selected_edges = []
+        pairs = [(a, b) for i, a in enumerate(node_ids)
+                        for b in node_ids[i+1:]]
+
+        # Split into columns for compact display
+        cols = st.columns(3)
+        for idx, (a, b) in enumerate(pairs):
+            an = nmap.get(a, ""); bn = nmap.get(b, "")
+            label = f"#{a}{' '+an if an else ''} ↔ #{b}{' '+bn if bn else ''}"
+            col = cols[idx % 3]
+            checked = col.checkbox(label, key=f"edge_{a}_{b}")
+            if checked:
+                thickness = col.select_slider("thick", [4,9,15],
+                    value=9, key=f"thick_{a}_{b}", label_visibility="collapsed")
+                selected_edges.append({"from": a, "to": b, "count": thickness})
+
+        st.markdown("---")
+        if st.button("DRAW PASS NETWORK", key="draw_pn", use_container_width=True):
+            data["pass_network"]["edges"] = selected_edges
+            with st.spinner("Drawing..."):
+                t, s = _auto_labels(data)
+                try:
+                    png = draw_pass_network(data, t, s, brand_in)
+                    st.session_state["pn_png"]   = png
+                    st.session_state["pn_title"] = t
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — AVERAGE POSITIONS

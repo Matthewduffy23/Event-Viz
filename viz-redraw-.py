@@ -212,19 +212,20 @@ Return:
     "pass_network": """You are a football data extraction engine.
 Extract pass network data from this screenshot. Return ONLY valid JSON, no explanation, no markdown.
 
-NODES — circles on the pitch containing shirt numbers:
-- Read the number inside each circle
-- Measure x position left-to-right within the pitch area (0=left edge, 100=right edge)
-- Measure y position bottom-to-top within the pitch area (0=bottom, 100=top)
-- Read the player surname written near the circle if visible — use "" if not readable
-- Nodes shown BELOW or OUTSIDE the pitch are substitutes → subs_bench only
+STEP 1 — NODES: Find every circle on the pitch.
+For each circle:
+- "id": the shirt number shown inside it (integer)
+- "x": horizontal position within pitch (0=left, 100=right)
+- "y": vertical position within pitch (0=bottom, 100=top)  
+- "name": read the small text surname written NEXT TO or BELOW the circle carefully. This text is always present. Look hard — it may be small or faint. Write exactly what you read.
 
-EDGES — lines drawn between nodes:
-- Look at each pair of nodes. Is there a line physically drawn between them? YES or NO.
-- ONLY include an edge if a line is clearly and directly drawn between those two nodes
-- If you are not sure whether a line exists, DO NOT include it
-- Count every edge pair only once (7→27 and 27→7 are the same edge)
-- Edge count from thickness: thin=4, medium=9, thick=15
+STEP 2 — EDGES: Look at the lines connecting circles.
+For EACH line you can physically see drawn in the image:
+- Trace it from one circle to another. What are those two shirt numbers?
+- Include it. count = line thickness (thin=4, medium=9, thick=15)
+For each pair of nodes WITHOUT a visible line between them: do NOT include an edge.
+The GK node WILL have lines to other nodes if the GK participated — include those.
+Do not skip any node when checking for connections.
 
 Return:
 {
@@ -234,34 +235,38 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <shirt_no_int>, "x": <0-100>, "y": <0-100>, "name": "<surname or empty>"}],
+    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname — never leave blank if text is visible>"}],
     "edges": [{"from": <id>, "to": <id>, "count": <4-15>}],
     "formation": "...",
-    "subs_bench": [<shirt_no>, ...]
+    "subs_bench": [<int>, ...]
   }
 }""",
 
     "avg_positions": """You are a football data extraction engine.
 Extract player positions from this lineup screenshot. Return ONLY valid JSON. No explanation. No markdown. No text before or after the JSON.
 
-The image shows a VERTICAL pitch. Convert to LANDSCAPE: GK goes on the LEFT (low x), attack goes RIGHT (high x).
+The image shows a VERTICAL (portrait) pitch. You must output LANDSCAPE coordinates.
+In the output: x=0 is the GK end (left), x=100 is the attacking end (right). y=0 is bottom of pitch, y=100 is top.
 
-STEP 1: Is the GK at the TOP or BOTTOM of the image?
+STEP 1 — Find the GK (different coloured circle, in goal area). Is GK at TOP or BOTTOM of image?
 
-IF GK IS AT THE BOTTOM of the image:
-- x = distance from bottom (GK end). Bottom of image = x5, top of image = x90.
-- y = LEFT side of image = y85, RIGHT side of image = y15, centre = y50.
-- NOTE: left and right are SWAPPED for y when GK is at bottom.
+STEP 2 — For every player measure two things within the pitch rectangle:
+  A) How far are they from the GK end? (0%=same end as GK, 100%=opposite end) → this becomes x, scaled to 5-92
+  B) How far across the pitch left-to-right are they? (0%=left edge, 100%=right edge) → this becomes y, scaled to 8-92
 
-IF GK IS AT THE TOP of the image:
-- x = distance from top (GK end). Top of image = x5, bottom of image = x90.
-- y = LEFT side of image = y15, RIGHT side of image = y85, centre = y50.
+STEP 3 — Apply the correct y mapping:
+  IF GK IS AT BOTTOM: left side of image = HIGH y (y=85), right side = LOW y (y=15)
+  IF GK IS AT TOP:    left side of image = LOW y (y=15),  right side = HIGH y (y=85)
 
-STEP 2: For EVERY player, assign x based on their depth on the pitch, and y based on their left/right position.
+STEP 4 — Verify spread. Your x values MUST use the full range:
+  GK: x=5-10
+  Defenders: x=20-32
+  Midfielders: x=38-62  
+  Forwards/Wingers: x=68-88
+  Strikers: x=78-92
+  If your defenders and midfielders have similar x values, you have compressed the range — fix it.
 
-STEP 3: Check — a player on the LEFT side of the portrait image must end up with a DIFFERENT y value than a player on the RIGHT side. If all players have the same y, you made an error.
-
-Return ONLY this JSON, nothing else:
+Return ONLY this JSON:
 {
   "viz_type": "avg_positions",
   "team": "...",
@@ -270,7 +275,7 @@ Return ONLY this JSON, nothing else:
   "date": "...",
   "avg_positions": {
     "formation": "...",
-    "players": [{"id": <shirt_no>, "x": <5-90>, "y": <15-85>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
+    "players": [{"id": <shirt_no>, "x": <5-92>, "y": <8-92>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
   }
 }"""
 }

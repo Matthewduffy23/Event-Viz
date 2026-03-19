@@ -212,33 +212,25 @@ Return:
     "pass_network": """You are a football data extraction engine.
 Extract pass network data from this screenshot. Return ONLY valid JSON, no explanation, no markdown.
 
-STEP 1 — NODES
-List every numbered circle ON the pitch. For each:
-- id: number inside circle
-- x: position left→right within pitch rectangle (0=left edge, 100=right edge)
-- y: position bottom→top within pitch rectangle (0=bottom, 100=top)
-- name: surname written near the circle — read carefully, it is always there
+STEP 1 — READ ALL TEXT LABELS FIRST
+Before anything else, scan the entire image for player name text. In pass network visualisations, each circle has a small surname written directly below or beside it. Read every name label carefully — they may be small or light coloured. Write down each shirt number and its associated surname.
 
-STEP 2 — EDGES (CRITICAL — read this carefully)
-Look at the image. You will see coloured lines drawn between some circles.
-Go through the lines ONE BY ONE. For each line:
-  - Follow it from one end to the other
-  - Which circle does it START at? (shirt number)
-  - Which circle does it END at? (shirt number)
-  - Add ONLY that pair
+STEP 2 — NODES
+For each numbered circle ON the pitch:
+- id: the number inside the circle (integer)
+- x: left-to-right position within the pitch rectangle (0=left, 100=right)
+- y: bottom-to-top position within the pitch rectangle (0=bottom, 100=top)
+- name: the surname you read in Step 1 for this shirt number. NEVER leave blank if you saw a label.
 
-DO NOT add an edge between two circles just because they are close together.
-DO NOT add an edge unless you can physically trace a drawn line between them.
-Some nodes will have ZERO edges — that is fine and correct.
-Some nodes will have MANY edges — trace every line from them carefully.
+STEP 3 — EDGES
+Look at the coloured/highlighted lines connecting circles. For each line:
+- Trace it from start circle to end circle
+- Record the two shirt numbers
+- count: line thickness — thin=4, medium=9, thick=15
+Only include lines you can physically see. Do not add edges just because nodes are close.
 
-Example: if node 19 has 4 lines drawn from it, you must return 4 edges involving id 19.
-Example: if nodes 22, 15, 5 have NO lines between them, return NO edges between them.
-
-Edge thickness → count: thin=4, medium=9, thick=15
-
-STEP 3 — SUBS
-Any circles shown outside/below the pitch go in subs_bench.
+STEP 4 — SUBS
+Circles outside/below the pitch go in subs_bench only.
 
 Return:
 {
@@ -248,7 +240,7 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname>"}],
+    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname — required>"}],
     "edges": [{"from": <int>, "to": <int>, "count": <4-15>}],
     "formation": "...",
     "subs_bench": [<int>, ...]
@@ -480,8 +472,8 @@ def draw_pass_network(data, title, subtitle, brand):
         if f not in node_map or t not in node_map: continue
         nf, nt = node_map[f], node_map[t]
         cnt   = e.get("count", 1)
-        alpha = 0.25 + 0.70 * (cnt / max_count)
-        lw    = 1.5  + 8.5  * (cnt / max_count)
+        alpha = 0.35 + 0.60 * (cnt / max_count)
+        lw    = 1.0  + 5.0  * (cnt / max_count)
         ax.plot([_cx(nf["x"]), _cx(nt["x"])],
                 [_cy(nf["y"]), _cy(nt["y"])],
                 color=T["accent"], alpha=alpha, lw=lw, zorder=2,
@@ -782,7 +774,7 @@ with tab3:
             key=lambda p: (p[0], p[1])
         )
 
-        THICK_OPTIONS = [3, 6, 9, 13, 18]  # 5 levels: 1=thin … 5=very thick
+        THICK_OPTIONS = [2, 3, 5, 7, 10]  # 5 levels: 1=thin … 5=very thick
 
         selected_edges = []
         cols = st.columns(3)
@@ -805,13 +797,13 @@ with tab3:
             checked = col.checkbox("✓", value=default, key=f"edge_{a}_{b}",
                                    label_visibility="collapsed")
             if checked:
-                raw_default = claude_counts.get(pair, 9)
+                raw_default = claude_counts.get(pair, 5)
                 # Map raw count to nearest index in THICK_OPTIONS
                 thick_idx = min(range(len(THICK_OPTIONS)),
                                key=lambda i: abs(THICK_OPTIONS[i] - raw_default))
                 thick_level = col.select_slider(
                     "thickness", options=[1, 2, 3, 4, 5],
-                    value=thick_idx + 1,
+                    value=max(1, min(5, thick_idx + 1)),
                     key=f"thick_{a}_{b}",
                     label_visibility="collapsed")
                 selected_edges.append({

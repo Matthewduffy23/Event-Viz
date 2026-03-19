@@ -751,37 +751,45 @@ with tab3:
         else:
             _empty_box(ph3)
 
-    # Phase 2: once nodes extracted, show connection picker
+    # Phase 2: once nodes extracted, show connection editor
     if "pn_data" in st.session_state:
         data  = st.session_state["pn_data"]
         pn    = data.get("pass_network", {})
         nodes = pn.get("nodes", [])
+        claude_edges = pn.get("edges", [])
         nmap  = {n["id"]: (n.get("name") or "").strip() for n in nodes}
         node_ids = sorted([n["id"] for n in nodes])
 
+        # Build set of pairs Claude detected
+        claude_pairs = set()
+        claude_counts = {}
+        for e in claude_edges:
+            pair = (min(e["from"], e["to"]), max(e["from"], e["to"]))
+            claude_pairs.add(pair)
+            claude_counts[pair] = e.get("count", 9)
+
         st.markdown("---")
         st.markdown("""<div style='font-size:10px;font-weight:900;letter-spacing:.15em;
-            color:#ef4444;margin-bottom:6px;'>STEP 2 — TICK THE CONNECTIONS</div>
-            <div style='color:#6b7280;font-size:12px;margin-bottom:12px;'>
-            Look at your original image. Tick every pair that has a line between them.
-            Use the thickness slider to set how thick each line should be.
+            color:#ef4444;margin-bottom:6px;'>STEP 2 — CHECK CONNECTIONS</div>
+            <div style='color:#6b7280;font-size:12px;margin-bottom:10px;'>
+            Claude has pre-ticked what it found. Untick wrong ones, tick missing ones.
             </div>""", unsafe_allow_html=True)
 
-        # Build all possible pairs as checkboxes
         selected_edges = []
-        pairs = [(a, b) for i, a in enumerate(node_ids)
-                        for b in node_ids[i+1:]]
-
-        # Split into columns for compact display
+        pairs = [(a, b) for i, a in enumerate(node_ids) for b in node_ids[i+1:]]
         cols = st.columns(3)
         for idx, (a, b) in enumerate(pairs):
+            pair = (min(a,b), max(a,b))
             an = nmap.get(a, ""); bn = nmap.get(b, "")
             label = f"#{a}{' '+an if an else ''} ↔ #{b}{' '+bn if bn else ''}"
             col = cols[idx % 3]
-            checked = col.checkbox(label, key=f"edge_{a}_{b}")
+            default = pair in claude_pairs
+            checked = col.checkbox(label, value=default, key=f"edge_{a}_{b}")
             if checked:
-                thickness = col.select_slider("thick", [4,9,15],
-                    value=9, key=f"thick_{a}_{b}", label_visibility="collapsed")
+                default_thick = claude_counts.get(pair, 9)
+                thickness = col.select_slider("", [4, 9, 15],
+                    value=default_thick, key=f"thick_{a}_{b}",
+                    label_visibility="collapsed")
                 selected_edges.append({"from": a, "to": b, "count": thickness})
 
         st.markdown("---")

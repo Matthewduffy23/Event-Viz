@@ -244,24 +244,24 @@ Return:
     "avg_positions": """You are a football data extraction engine.
 Extract player positions from this lineup screenshot. Return ONLY valid JSON. No explanation. No markdown. No text before or after the JSON.
 
-This image shows a VERTICAL (portrait) pitch. Output must be LANDSCAPE with GK on LEFT (low x) and attack on RIGHT (high x).
+The image shows a VERTICAL pitch. Convert to LANDSCAPE: GK goes on the LEFT (low x), attack goes RIGHT (high x).
 
-IDENTIFY: Is the GK near the TOP or BOTTOM of the image?
+STEP 1: Is the GK at the TOP or BOTTOM of the image?
 
-IF GK IS NEAR THE BOTTOM:
-  For each player, estimate how far UP the pitch they are (0%=bottom/GK end, 100%=top/attack end).
-  That percentage becomes their x value (GK=8, defenders=25, midfield=50, attackers=80).
-  Estimate how far across LEFT-TO-RIGHT they are (0%=left, 100%=right).
-  That percentage becomes their y value (left=15, centre=50, right=85).
+IF GK IS AT THE BOTTOM of the image:
+- x = distance from bottom (GK end). Bottom of image = x5, top of image = x90.
+- y = LEFT side of image = y85, RIGHT side of image = y15, centre = y50.
+- NOTE: left and right are SWAPPED for y when GK is at bottom.
 
-IF GK IS NEAR THE TOP:
-  For each player, estimate how far DOWN the pitch they are (0%=top/GK end, 100%=bottom/attack end).
-  That percentage becomes their x value (GK=8, defenders=25, midfield=50, attackers=80).
-  Estimate how far across LEFT-TO-RIGHT they are (0%=left, 100%=right).
-  Right side of image → LOW y (y=15). Left side → HIGH y (y=85).
+IF GK IS AT THE TOP of the image:
+- x = distance from top (GK end). Top of image = x5, bottom of image = x90.
+- y = LEFT side of image = y15, RIGHT side of image = y85, centre = y50.
 
-CRITICAL: Your first character of output must be { and last must be }. Nothing else.
+STEP 2: For EVERY player, assign x based on their depth on the pitch, and y based on their left/right position.
 
+STEP 3: Check — a player on the LEFT side of the portrait image must end up with a DIFFERENT y value than a player on the RIGHT side. If all players have the same y, you made an error.
+
+Return ONLY this JSON, nothing else:
 {
   "viz_type": "avg_positions",
   "team": "...",
@@ -270,7 +270,7 @@ CRITICAL: Your first character of output must be { and last must be }. Nothing e
   "date": "...",
   "avg_positions": {
     "formation": "...",
-    "players": [{"id": <shirt_no>, "x": <5-95>, "y": <10-90>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
+    "players": [{"id": <shirt_no>, "x": <5-90>, "y": <15-85>, "name": "...", "position": "GK|CB|LB|RB|DM|CM|AM|LW|RW|ST"}]
   }
 }"""
 }
@@ -700,96 +700,31 @@ with tab2:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
     c1, c2 = st.columns([1, 1.8], gap="large")
-
     with c1:
         up3 = st.file_uploader("Pass network screenshot", type=["png","jpg","jpeg","webp"],
                                 key="up3", label_visibility="collapsed")
         if up3:
             st.image(Image.open(up3), use_column_width=True)
-            if st.button("EXTRACT", key="go3", use_container_width=True):
-                if not api_key:
-                    st.error("Enter API key in sidebar.")
-                else:
-                    for k in ["pn_data","pn_png","pn_title"]:
-                        st.session_state.pop(k, None)
-                    with st.spinner("Reading viz..."):
-                        try:
-                            st.session_state["pn_data"] = call_claude(
-                                _prep_image(up3), "pass network", api_key)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-
-        if "pn_data" in st.session_state:
-            data  = st.session_state["pn_data"]
-            pn    = data.get("pass_network", {})
-            nodes = pn.get("nodes", [])
-            edges = list(pn.get("edges", []))
-            nmap  = {n["id"]: (n.get("name") or "").strip() for n in nodes}
-
-            st.markdown("---")
-            st.markdown('<div style="font-size:10px;font-weight:900;letter-spacing:.15em;color:#ef4444;margin-bottom:4px;">EDGE EDITOR</div>', unsafe_allow_html=True)
-            st.caption("Remove wrong lines or add missing ones, then draw.")
-
-            edges_to_keep = []
-            for i, e in enumerate(edges):
-                fn = f"#{e['from']} {nmap.get(e['from'],'')}"
-                tn = f"#{e['to']} {nmap.get(e['to'],'')}"
-                ec1, ec2 = st.columns([5, 1])
-                with ec1:
-                    st.markdown(
-                        f'<div style="color:#cbd5e1;font-size:12px;padding:3px 0;">'
-                        f'{fn.strip()} ↔ {tn.strip()}'
-                        f'<span style="color:#4b5563;font-size:11px;"> ({e["count"]})</span>'
-                        f'</div>', unsafe_allow_html=True)
-                with ec2:
-                    if not st.button("✕", key=f"del_{i}"):
-                        edges_to_keep.append(e)
-
-            node_ids = sorted([n["id"] for n in nodes])
-            nlab = {n["id"]: f"#{n['id']} {(n.get('name') or '').strip()}" for n in nodes}
-            st.markdown("**Add edge:**")
-            ac1, ac2, ac3 = st.columns([2, 2, 1])
-            with ac1:
-                af = st.selectbox("From", node_ids,
-                    format_func=lambda x: nlab.get(x, str(x)), key="ae_from")
-            with ac2:
-                at = st.selectbox("To", node_ids,
-                    format_func=lambda x: nlab.get(x, str(x)), key="ae_to")
-            with ac3:
-                ac = st.number_input("Ct", 1, 22, 8, key="ae_cnt")
-            if st.button("+ Add edge", key="ae_add", use_container_width=True):
-                if af != at:
-                    edges_to_keep.append({"from": af, "to": at, "count": int(ac)})
-
-            st.session_state["pn_data"]["pass_network"]["edges"] = edges_to_keep
-
-            st.markdown("---")
-            if st.button("DRAW PASS NETWORK", key="draw_pn", use_container_width=True):
-                data = st.session_state["pn_data"]
+            go3 = st.button("EXTRACT & REDRAW", key="go3", use_container_width=True)
+        else:
+            go3 = False
+    with c2:
+        ph3 = st.empty(); _empty_box(ph3)
+        if go3 and up3:
+            if not api_key: st.error("Enter API key in sidebar.")
+            else:
+                with st.spinner("Reading viz..."):
+                    try: data = call_claude(_prep_image(up3), "pass network", api_key)
+                    except Exception as e: st.error(f"Error: {e}"); st.stop()
                 with st.spinner("Drawing..."):
                     t, s = _auto_labels(data)
-                    try:
-                        png = draw_pass_network(data, t, s, brand_in)
-                        st.session_state["pn_png"]   = png
-                        st.session_state["pn_title"] = t
-                        st.rerun()
-                    except ValueError as e:
-                        st.error(str(e))
-
-    with c2:
-        ph3 = st.empty()
-        if "pn_png" in st.session_state:
-            ph3.image(st.session_state["pn_png"], use_column_width=True)
-            st.download_button("⬇️ Download 1920×1080 PNG",
-                st.session_state["pn_png"],
-                f"{(st.session_state.get('pn_title') or 'passnet').replace(' ','_')}.png",
-                "image/png", use_container_width=True, key="dl3")
-            if "pn_data" in st.session_state:
-                with st.expander("Extracted JSON"):
-                    st.json(st.session_state["pn_data"])
-        else:
-            _empty_box(ph3)
+                    try: png = draw_pass_network(data, t, s, brand_in)
+                    except ValueError as e: st.error(str(e)); st.stop()
+                ph3.image(png, use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG", png,
+                    f"{(t or 'passnet').replace(' ','_')}.png", "image/png",
+                    use_container_width=True, key="dl3")
+                with st.expander("Extracted JSON"): st.json(data)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — AVERAGE POSITIONS

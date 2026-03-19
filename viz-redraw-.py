@@ -707,15 +707,83 @@ with tab3:
                 with st.spinner("Reading viz…"):
                     try: data = call_claude(_prep_image(up3), "pass network", api_key)
                     except Exception as e: st.error(f"Error: {e}"); st.stop()
+
+                # Store extracted data in session state for editing
+                st.session_state["pn_data"] = data
+
+        # ── Edge editor — always shown once data is extracted ────────────────
+        if "pn_data" in st.session_state:
+            data = st.session_state["pn_data"]
+            pn   = data.get("pass_network", {})
+            nodes = pn.get("nodes", [])
+            edges = pn.get("edges", [])
+
+            st.markdown("""<div style="background:#0d1220;border:1px solid #1e2d4a;
+                border-radius:8px;padding:14px 16px;margin-bottom:12px;">
+                <div style="font-size:10px;font-weight:900;letter-spacing:.15em;
+                color:#ef4444;margin-bottom:8px;">EDGE EDITOR — ADD / REMOVE CONNECTIONS</div>
+                <div style="color:#6b7280;font-size:11px;">
+                Claude sometimes misses or invents edges. Use this to fix them before drawing.
+                </div></div>""", unsafe_allow_html=True)
+
+            # Show current edges with delete buttons
+            st.markdown("**Current edges** — click ✕ to remove:")
+            edges_to_keep = []
+            for i, e in enumerate(edges):
+                col_e1, col_e2 = st.columns([4, 1])
+                with col_e1:
+                    node_names = {n["id"]: f"{n['id']} {n.get('name','')}" for n in nodes}
+                    f_label = node_names.get(e["from"], str(e["from"]))
+                    t_label = node_names.get(e["to"],   str(e["to"]))
+                    st.markdown(f'<span style="color:#e2e8f0;font-size:12px;">'
+                                f'{f_label} ↔ {t_label} &nbsp; '
+                                f'<span style="color:#6b7280;">count={e["count"]}</span>'
+                                f'</span>', unsafe_allow_html=True)
+                with col_e2:
+                    if not st.button("✕", key=f"del_edge_{i}"):
+                        edges_to_keep.append(e)
+
+            st.markdown("---")
+            st.markdown("**Add a missing edge:**")
+            node_ids = sorted([n["id"] for n in nodes])
+            node_labels = {n["id"]: f"{n['id']} {n.get('name','')}" for n in nodes}
+            ae1, ae2, ae3, ae4 = st.columns([1,1,1,1])
+            with ae1:
+                new_from = st.selectbox("From", node_ids,
+                    format_func=lambda x: node_labels.get(x, str(x)), key="new_from")
+            with ae2:
+                new_to   = st.selectbox("To",   node_ids,
+                    format_func=lambda x: node_labels.get(x, str(x)), key="new_to")
+            with ae3:
+                new_cnt  = st.number_input("Count", 1, 22, 8, key="new_cnt")
+            with ae4:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                if st.button("＋ Add", key="add_edge"):
+                    if new_from != new_to:
+                        edges_to_keep.append({"from": new_from, "to": new_to, "count": int(new_cnt)})
+
+            # Update edges in session state
+            st.session_state["pn_data"]["pass_network"]["edges"] = edges_to_keep
+            data = st.session_state["pn_data"]
+
+            st.markdown("---")
+            if st.button("🎨 DRAW PASS NETWORK", key="draw_pn", use_container_width=True):
                 with st.spinner("Drawing…"):
                     t, s = _auto_labels(data)
-                    try: png = draw_pass_network(data, t, s, brand_in)
-                    except ValueError as e: st.error(str(e)); st.stop()
-                ph3.image(png, use_column_width=True)
-                st.download_button("⬇️ Download 1920×1080 PNG", png,
-                    f"{(t or 'passnet').replace(' ','_')}.png", "image/png",
-                    use_container_width=True, key="dl3")
-                with st.expander("Extracted JSON"): st.json(data)
+                    try:
+                        png = draw_pass_network(data, t, s, brand_in)
+                        st.session_state["pn_png"] = png
+                        st.session_state["pn_title"] = t
+                    except ValueError as e:
+                        st.error(str(e))
+
+            if "pn_png" in st.session_state:
+                ph3.image(st.session_state["pn_png"], use_column_width=True)
+                st.download_button("⬇️ Download 1920×1080 PNG",
+                    st.session_state["pn_png"],
+                    f"{(st.session_state.get('pn_title') or 'passnet').replace(' ','_')}.png",
+                    "image/png", use_container_width=True, key="dl3")
+            with st.expander("Extracted JSON"): st.json(data)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — AVERAGE POSITIONS

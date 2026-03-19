@@ -772,25 +772,52 @@ with tab3:
         st.markdown("""<div style='font-size:10px;font-weight:900;letter-spacing:.15em;
             color:#ef4444;margin-bottom:6px;'>STEP 2 — CHECK CONNECTIONS</div>
             <div style='color:#6b7280;font-size:12px;margin-bottom:10px;'>
-            Claude has pre-ticked what it found. Untick wrong ones, tick missing ones.
+            Pre-ticked by Claude. Untick wrong ones, tick missing ones. Thickness: 1=thin → 5=thick.
             </div>""", unsafe_allow_html=True)
 
+        # Group pairs by the lower number so all #2 pairs are together, then #5, etc.
+        # pairs sorted: primary key = first (lower) number, secondary = second number
+        pairs = sorted(
+            [(a, b) for i, a in enumerate(node_ids) for b in node_ids[i+1:]],
+            key=lambda p: (p[0], p[1])
+        )
+
+        THICK_OPTIONS = [3, 6, 9, 13, 18]  # 5 levels: 1=thin … 5=very thick
+
         selected_edges = []
-        pairs = [(a, b) for i, a in enumerate(node_ids) for b in node_ids[i+1:]]
         cols = st.columns(3)
         for idx, (a, b) in enumerate(pairs):
-            pair = (min(a,b), max(a,b))
-            an = nmap.get(a, ""); bn = nmap.get(b, "")
-            label = f"#{a}{' '+an if an else ''} ↔ #{b}{' '+bn if bn else ''}"
+            pair = (min(a, b), max(a, b))
+            an = nmap.get(a, "")
+            bn = nmap.get(b, "")
+            a_label = f"{a} {an}".strip()
+            b_label = f"{b} {bn}".strip()
+            label = f"{a_label}  ↔  {b_label}"
             col = cols[idx % 3]
+
+            # White text checkbox label via markdown trick
+            col.markdown(
+                f'<span style="color:#ffffff;font-size:12px;font-weight:600;">'
+                f'{a_label} ↔ {b_label}</span>',
+                unsafe_allow_html=True)
+
             default = pair in claude_pairs
-            checked = col.checkbox(label, value=default, key=f"edge_{a}_{b}")
+            checked = col.checkbox("✓", value=default, key=f"edge_{a}_{b}",
+                                   label_visibility="collapsed")
             if checked:
-                default_thick = claude_counts.get(pair, 9)
-                thickness = col.select_slider("", [4, 9, 15],
-                    value=default_thick, key=f"thick_{a}_{b}",
+                raw_default = claude_counts.get(pair, 9)
+                # Map raw count to nearest index in THICK_OPTIONS
+                thick_idx = min(range(len(THICK_OPTIONS)),
+                               key=lambda i: abs(THICK_OPTIONS[i] - raw_default))
+                thick_level = col.select_slider(
+                    "thickness", options=[1, 2, 3, 4, 5],
+                    value=thick_idx + 1,
+                    key=f"thick_{a}_{b}",
                     label_visibility="collapsed")
-                selected_edges.append({"from": a, "to": b, "count": thickness})
+                selected_edges.append({
+                    "from": a, "to": b,
+                    "count": THICK_OPTIONS[thick_level - 1]
+                })
 
         st.markdown("---")
         if st.button("DRAW PASS NETWORK", key="draw_pn", use_container_width=True):

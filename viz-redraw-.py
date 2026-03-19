@@ -212,20 +212,33 @@ Return:
     "pass_network": """You are a football data extraction engine.
 Extract pass network data from this screenshot. Return ONLY valid JSON, no explanation, no markdown.
 
-STEP 1 — NODES: Find every circle on the pitch.
-For each circle:
-- "id": the shirt number shown inside it (integer)
-- "x": horizontal position within pitch (0=left, 100=right)
-- "y": vertical position within pitch (0=bottom, 100=top)  
-- "name": read the small text surname written NEXT TO or BELOW the circle carefully. This text is always present. Look hard — it may be small or faint. Write exactly what you read.
+STEP 1 — NODES
+List every numbered circle ON the pitch. For each:
+- id: number inside circle
+- x: position left→right within pitch rectangle (0=left edge, 100=right edge)
+- y: position bottom→top within pitch rectangle (0=bottom, 100=top)
+- name: surname written near the circle — read carefully, it is always there
 
-STEP 2 — EDGES: Look at the lines connecting circles.
-For EACH line you can physically see drawn in the image:
-- Trace it from one circle to another. What are those two shirt numbers?
-- Include it. count = line thickness (thin=4, medium=9, thick=15)
-For each pair of nodes WITHOUT a visible line between them: do NOT include an edge.
-The GK node WILL have lines to other nodes if the GK participated — include those.
-Do not skip any node when checking for connections.
+STEP 2 — EDGES (CRITICAL — read this carefully)
+Look at the image. You will see coloured lines drawn between some circles.
+Go through the lines ONE BY ONE. For each line:
+  - Follow it from one end to the other
+  - Which circle does it START at? (shirt number)
+  - Which circle does it END at? (shirt number)
+  - Add ONLY that pair
+
+DO NOT add an edge between two circles just because they are close together.
+DO NOT add an edge unless you can physically trace a drawn line between them.
+Some nodes will have ZERO edges — that is fine and correct.
+Some nodes will have MANY edges — trace every line from them carefully.
+
+Example: if node 19 has 4 lines drawn from it, you must return 4 edges involving id 19.
+Example: if nodes 22, 15, 5 have NO lines between them, return NO edges between them.
+
+Edge thickness → count: thin=4, medium=9, thick=15
+
+STEP 3 — SUBS
+Any circles shown outside/below the pitch go in subs_bench.
 
 Return:
 {
@@ -235,8 +248,8 @@ Return:
   "competition": "...",
   "date": "...",
   "pass_network": {
-    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname — never leave blank if text is visible>"}],
-    "edges": [{"from": <id>, "to": <id>, "count": <4-15>}],
+    "nodes": [{"id": <int>, "x": <0-100>, "y": <0-100>, "name": "<surname>"}],
+    "edges": [{"from": <int>, "to": <int>, "count": <4-15>}],
     "formation": "...",
     "subs_bench": [<int>, ...]
   }
